@@ -1,0 +1,17 @@
+.{
+    .name = .libyaml,
+    .fingerprint = 0xd606f5c879b8f062,
+    .version = "0.2.5",
+    .dependencies = .{
+        .libyaml = .{
+            .url = "git+https://github.com/yaml/libyaml?ref=0.2.5#2c891fc7a770e8ba2fec34fc6b545c672beb37e6",
+            .hash = "N-V-__8AAFisCAAMQCHLFuzfjTcHCY_2lOFAyfksvXa7HzDL",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "LICENSE-LIBYAML",
+        "readme.md",
+    },
+}

@@ -1,0 +1,21 @@
+.{
+    .name = .wgpu_zig_bindings,
+    .version = "0.0.1",
+    .dependencies = .{
+        .webgpu_headers = .{
+            .url = "git+https://github.com/webgpu-native/webgpu-headers#bac520839ff5ed2e2b648ed540bd9ec45edbccbc",
+            .hash = "N-V-__8AAIEJBgDDDaQxHnH7W6qR_NeONW1g8R_Tt0Xe9n_u",
+        },
+        .zig_yaml = .{
+            .url = "git+https://github.com/kubkon/zig-yaml#a6c2cd8760bf45c49b17a3f6259c4dfe3ded528e",
+            .hash = "zig_yaml-0.2.0-C1161pmrAgDnipDTh_4v4RQD27XN5GNaVlzzvlXf1jfW",
+        },
+        .libyaml = .{
+            .url = "./libyaml",
+            .hash = "libyaml-0.2.5-YvC4efYGAABrQPIab5pTeCZT9P9xfZCh7RMueS5X323Y",
+        },
+    },
+    .minimum_zig_version = "0.15.1",
+    .paths = .{""},
+    .fingerprint = 0x41541123fd3f9611,
+}
