@@ -32,17 +32,17 @@ pub fn main() !void {
     // var writer = &file_writer.interface;
 
     log.info("Reading {s}", .{wgpu_headers_yaml_path});
-    const wgpu_headers_yaml = try std.fs.cwd().readFileAlloc(gpa, wgpu_headers_yaml_path, std.math.maxInt(usize));
+    const wgpu_headers_yaml = try std.fs.cwd().readFileAlloc(wgpu_headers_yaml_path, gpa, .unlimited);
     defer gpa.free(wgpu_headers_yaml);
 
     var yaml = try Yaml.init(wgpu_headers_yaml);
     defer yaml.deinit();
 
     const res = try yaml.parseDocument(struct {
-        copyright: ?[]const u8 = null,
+        copyright: []const u8,
     }, gpa);
     defer res.deinit();
-    log.info("copyright `{?s}`", .{res.value.copyright});
+    log.info("copyright `{s}`", .{res.value.copyright});
 
     // var parser = try YamlParser.init(wgpu_headers_yaml);
     // defer parser.deinit();
