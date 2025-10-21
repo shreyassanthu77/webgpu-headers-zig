@@ -7,8 +7,6 @@ const c = @cImport({
 const Yaml = @This();
 
 parser: c.yaml_parser_t,
-event: c.yaml_event_t = undefined,
-first: bool = true,
 
 pub fn init(src: []const u8) !Yaml {
     var parser: c.yaml_parser_t = undefined;
@@ -44,30 +42,42 @@ pub fn deinit(self: *Yaml) void {
 }
 
 pub fn parseDocument(self: *Yaml, comptime T: type, gpa: std.mem.Allocator) !Parsed(T) {
-    if (try self.nextEvent()) {
-        if (self.event.type != c.YAML_DOCUMENT_START_EVENT) {
-            return error.ExpectedDocumentStart;
-        }
+    var event: c.yaml_event_t = undefined;
+    if (!try self.nextEvent(&event)) return error.UnexpectedEndOfInput;
+    defer c.yaml_event_delete(&event);
+
+    if (event.type != c.YAML_DOCUMENT_START_EVENT) {
+        return error.ExpectedDocumentStart;
     }
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
 
-    const res = try self.parse(T, arena.allocator());
+    const res = try self.parseEvent(T, arena.allocator(), &event);
+    c.yaml_event_delete(&event);
+
+    // Try to consume the document end event
+    if (try self.nextEvent(&event)) {
+        defer c.yaml_event_delete(&event);
+        if (event.type != c.YAML_DOCUMENT_END_EVENT) {
+            return error.ExpectedDocumentEnd;
+        }
+    }
+
     return Parsed(T){
         .arena = arena,
         .value = res,
     };
 }
 
-fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
+fn parseEvent(self: *Yaml, comptime T: type, allocator: std.mem.Allocator, event: *c.yaml_event_t) !T {
     const t_info = @typeInfo(T);
     switch (t_info) {
         .int => {
-            if (!try self.nextEvent()) return error.UnexpectedEndOfInput;
-            switch (self.event.type) {
+            if (!try self.nextEvent(event)) return error.UnexpectedEndOfInput;
+            switch (event.type) {
                 c.YAML_SCALAR_EVENT => {
-                    const scalar = self.event.data.scalar;
+                    const scalar = event.data.scalar;
                     const value = scalar.value[0..scalar.length];
                     const result = try std.fmt.parseInt(T, value, 10);
                     return result;
@@ -76,10 +86,10 @@ fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
             }
         },
         .float => {
-            if (!try self.nextEvent()) return error.UnexpectedEndOfInput;
-            switch (self.event.type) {
+            if (!try self.nextEvent(event)) return error.UnexpectedEndOfInput;
+            switch (event.type) {
                 c.YAML_SCALAR_EVENT => {
-                    const scalar = self.event.data.scalar;
+                    const scalar = event.data.scalar;
                     const value = scalar.value[0..scalar.length];
                     const result = try std.fmt.parseFloat(T, value);
                     return result;
@@ -88,10 +98,10 @@ fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
             }
         },
         .bool => {
-            if (!try self.nextEvent()) return error.UnexpectedEndOfInput;
-            switch (self.event.type) {
+            if (!try self.nextEvent(event)) return error.UnexpectedEndOfInput;
+            switch (event.type) {
                 c.YAML_SCALAR_EVENT => {
-                    const scalar = self.event.data.scalar;
+                    const scalar = event.data.scalar;
                     const value = scalar.value[0..scalar.length];
                     if (std.mem.eql(u8, value, "true")) {
                         return true;
@@ -105,8 +115,8 @@ fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
             }
         },
         .@"struct" => |struct_info| {
-            if (!try self.nextEvent()) return error.UnexpectedEndOfInput;
-            switch (self.event.type) {
+            if (!try self.nextEvent(event)) return error.UnexpectedEndOfInput;
+            switch (event.type) {
                 c.YAML_MAPPING_START_EVENT => {},
                 else => return error.UnexpectedToken,
             }
@@ -115,12 +125,12 @@ fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
             var result: T = undefined;
             var found: [fields.len]bool = [_]bool{false} ** fields.len;
             while (true) {
-                if (!try self.nextEvent()) break;
+                if (!try self.nextEvent(event)) break;
 
-                const key = switch (self.event.type) {
+                const key = switch (event.type) {
                     c.YAML_MAPPING_END_EVENT => break,
                     c.YAML_SCALAR_EVENT => blk: {
-                        const scalar = self.event.data.scalar;
+                        const scalar = event.data.scalar;
                         const value = scalar.value[0..scalar.length];
                         break :blk value;
                     },
@@ -132,8 +142,8 @@ fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
                     if (std.mem.eql(u8, field.name, key)) {
                         if (found[i]) return error.DuplicateField;
 
-                        if (!try self.nextEvent()) return error.UnexpectedEndOfInput;
-                        @field(result, field.name) = try self.parse(field.type, allocator);
+                        if (!try self.nextEvent(event)) return error.UnexpectedEndOfInput;
+                        @field(result, field.name) = try self.parseEvent(field.type, allocator, event);
                         found[i] = true;
                         break;
                     }
@@ -157,22 +167,22 @@ fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
                 .one => {
                     const ptr = try allocator.create(ptr_info.child);
                     errdefer allocator.destroy(ptr);
-                    ptr.* = try self.parse(ptr_info.child, allocator);
+                    ptr.* = try self.parseEvent(ptr_info.child, allocator, event);
                     return ptr;
                 },
                 .slice => {
-                    switch (self.event.type) {
+                    switch (event.type) {
                         c.YAML_SEQUENCE_START_EVENT => {
                             var array_list: std.ArrayList(ptr_info.child) = .empty;
                             errdefer array_list.deinit(allocator);
 
                             while (true) {
-                                if (!try self.nextEvent()) break;
-                                switch (self.event.type) {
+                                if (!try self.nextEvent(event)) break;
+                                switch (event.type) {
                                     c.YAML_SEQUENCE_END_EVENT => break,
                                     else => {
                                         try array_list.ensureUnusedCapacity(allocator, 1);
-                                        array_list.appendAssumeCapacity(try self.parse(ptr_info.child, allocator));
+                                        array_list.appendAssumeCapacity(try self.parseEvent(ptr_info.child, allocator, event));
                                     },
                                 }
                             }
@@ -185,7 +195,7 @@ fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
                         },
                         c.YAML_SCALAR_EVENT => {
                             if (ptr_info.child != u8) return error.UnexpectedToken;
-                            const slice = self.event.data.scalar.value[0..self.event.data.scalar.length];
+                            const slice = event.data.scalar.value[0..event.data.scalar.length];
                             var copy: std.ArrayList(u8) = .empty;
                             errdefer copy.deinit(allocator);
                             try copy.appendSlice(allocator, slice);
@@ -206,18 +216,13 @@ fn parse(self: *Yaml, comptime T: type, allocator: std.mem.Allocator) !T {
     }
 }
 
-fn nextEvent(self: *Yaml) !bool {
-    if (self.first) {
-        self.first = false;
-    } else {
-        c.yaml_event_delete(&self.event);
-    }
-    if (c.yaml_parser_parse(&self.parser, &self.event) == 0) {
-        log.info("event `{s}`", .{eventTypeString(&self.event)});
+fn nextEvent(self: *Yaml, event: *c.yaml_event_t) !bool {
+    if (c.yaml_parser_parse(&self.parser, event) == 0) {
+        log.info("event `{s}`", .{eventTypeString(event)});
         return error.ParserError;
     }
-    log.info("event `{s}`", .{eventTypeString(&self.event)});
-    return self.event.type != c.YAML_NO_EVENT;
+    log.info("event `{s}`", .{eventTypeString(event)});
+    return event.type != c.YAML_NO_EVENT;
 }
 
 fn eventTypeString(event: *const c.yaml_event_t) []const u8 {

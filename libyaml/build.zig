@@ -30,6 +30,10 @@ pub fn build(b: *std.Build) void {
     libyaml.root_module.addCMacro("YAML_VERSION_MINOR", "2");
     libyaml.root_module.addCMacro("YAML_VERSION_PATCH", "5");
     libyaml.root_module.addCMacro("YAML_VERSION_STRING", "\"0.2.5\"");
+
+    // Try to fix potential memory issues
+    libyaml.root_module.addCMacro("YAML_DECLARE_STATIC", "1");
+    libyaml.root_module.addCMacro("HAVE_CONFIG_H", "1");
     libyaml.installHeader(upstream.path("include/yaml.h"), "yaml.h");
     b.installArtifact(libyaml);
 }

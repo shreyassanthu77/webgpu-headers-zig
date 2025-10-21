@@ -7,10 +7,6 @@ pub fn build(b: *std.Build) void {
     // const webgpu_headers_yaml = b.option(std.Build.LazyPath, "webgpu_headers_yaml", "Path to the webgpu-headers.yaml file") orelse
     //     getBundledWebgpuHeadersYaml(b);
 
-    const libyaml_dep = b.dependency("libyaml", .{
-        .target = target,
-        .optimize = optimize,
-    });
     const bindings_generator = b.addExecutable(.{
         .name = "wgpu-zig-bindings-generator",
         .root_module = b.createModule(.{
@@ -20,7 +16,8 @@ pub fn build(b: *std.Build) void {
         }),
         .use_llvm = use_llvm,
     });
-    bindings_generator.linkLibrary(libyaml_dep.artifact("yaml"));
+    bindings_generator.linkSystemLibrary("fyaml");
+    bindings_generator.linkLibC();
     b.installArtifact(bindings_generator);
 
     const run_bindings_generator = b.addRunArtifact(bindings_generator);
