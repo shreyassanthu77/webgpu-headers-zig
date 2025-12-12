@@ -1,16 +1,13 @@
 .{
     .name = .wgpu_zig_bindings,
     .version = "0.0.1",
-    .dependencies = .{
-        .webgpu_headers = .{
-            .url = "git+https://github.com/webgpu-native/webgpu-headers#bac520839ff5ed2e2b648ed540bd9ec45edbccbc",
-            .hash = "N-V-__8AAIEJBgDDDaQxHnH7W6qR_NeONW1g8R_Tt0Xe9n_u",
-        },
-        .libyaml = .{
-            .path = "./libyaml",
-        },
-    },
     .minimum_zig_version = "0.15.1",
     .paths = .{""},
-    .fingerprint = 0x41541123fd3f9611,
+    .fingerprint = 0x41541123a9d9d139,
+    .dependencies = .{
+        .webgpu_headers = .{
+            .url = "git+https://github.com/webgpu-native/webgpu-headers.git#12c1d34e7464cac58cc41a24aeee1d48a2f21b74",
+            .hash = "N-V-__8AAB6zCwBR0I5-Aae8davBDtgznN3ZSUPm8rCH-Aii",
+        },
+    },
 }
