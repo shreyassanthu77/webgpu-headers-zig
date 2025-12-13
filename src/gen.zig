@@ -250,35 +250,6 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
 
     for (content.objects) |object| {
         try writeIndented(alloc, w, '/', 3, "{s}", .{object.doc}, "{s}");
-        try w.writeAll("pub const ");
-        try writeIdentifier(w, object.name, .pascal);
-        try w.writeAll(" = *opaque {\n");
-        try w.writeAll("};\n\n");
-    }
-
-    // ---- Extern declarations (API entrypoints) ----
-    // Implicit global: wgpuGetProcAddress
-    try w.writeAll("pub extern fn wgpuGetProcAddress(proc_name: String) Proc;\n\n");
-
-    // Global functions from JSON
-    for (content.functions) |f| {
-        try writeIndented(alloc, w, '/', 3, "{s}", .{f.doc}, "{s}");
-        try w.writeAll("pub extern fn ");
-        try writeWgpuGlobalName(w, f.name);
-        try w.writeAll("(");
-        try writeExternArgs(alloc, w, f.args);
-        try w.writeAll(")");
-        if (f.returns) |ret| {
-            try w.writeAll(" ");
-            try writeType(w, ret.type, ret.pointer, ret.optional);
-        } else {
-            try w.writeAll(" void");
-        }
-        try w.writeAll(";\n\n");
-    }
-
-    // Methods from JSON + implicit AddRef/Release + FreeMembers
-    for (content.objects) |object| {
         const obj_pascal = blk: {
             var name_w = std.Io.Writer.Allocating.init(alloc);
             try writeIdentifier(&name_w.writer, object.name, .pascal);
@@ -286,22 +257,74 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
         };
         defer alloc.free(obj_pascal);
 
+        try w.writeAll("pub const ");
+        try w.writeAll(obj_pascal);
+        try w.writeAll(" = opaque {\n");
+
+        // Private extern entrypoints + nice Zig methods for editor autocomplete.
         for (object.methods) |m| {
-            try writeIndented(alloc, w, '/', 3, "{s}", .{m.doc}, "{s}");
-            try w.writeAll("pub extern fn ");
+            try writeIndented(alloc, w, ' ', 4, "{s}", .{m.doc}, "/// {s}");
+
+            // Private raw extern (kept next to the wrapper).
+            try w.writeAll("    extern fn ");
             try w.writeAll("wgpu");
             try w.writeAll(obj_pascal);
             try writeIdentifier(w, m.name, .pascal);
             try w.writeAll("(");
-            // first arg: the object handle
-            try w.writeAll("self: ");
-            try w.writeAll(obj_pascal);
+            try w.writeAll("self: *@This()");
             if (m.args.len != 0) {
                 try w.writeAll(", ");
                 try writeExternArgs(alloc, w, m.args);
             }
             if (m.callback) |cb_ref| {
-                // callback.<name>
+                if (std.mem.startsWith(u8, cb_ref, "callback.")) {
+                    const cb_name = cb_ref["callback.".len..];
+                    const cb_pascal = blk: {
+                        var name_w = std.Io.Writer.Allocating.init(alloc);
+                        try writeIdentifier(&name_w.writer, cb_name, .pascal);
+                        break :blk try name_w.toOwnedSlice();
+                    };
+                    defer alloc.free(cb_pascal);
+                    if (m.args.len != 0) {
+                        try w.writeAll(", ");
+                    } else {
+                        try w.writeAll(", ");
+                    }
+                    try w.writeAll("callback_info: ");
+                    try w.print("{s}CallbackInfo", .{cb_pascal});
+                }
+            }
+            try w.writeAll(")");
+            if (m.returns) |ret| {
+                try w.writeAll(" ");
+                try writeType(w, ret.type, ret.pointer, ret.optional);
+            } else {
+                try w.writeAll(" void");
+            }
+            try w.writeAll(";\n");
+
+            try w.writeAll("    pub inline fn ");
+            try writeIdentifier(w, m.name, .camel);
+            try w.writeAll("(self: *@This()");
+
+            // Wrapper args: use slices for array<...> params, []const u8/?[]const u8 for string params,
+            // and optional const struct pointers as ?Struct values for better autocomplete.
+            for (m.args) |arg| {
+                try w.writeAll(", ");
+                try writeIdentifier(w, arg.name, .snake);
+                try w.writeAll(": ");
+                if (std.mem.startsWith(u8, arg.type, "array<")) {
+                    try writeSliceType(w, arg);
+                } else if (isInputStringType(arg.type)) {
+                    try writeStringSliceType(w, arg.type);
+                } else if (isConstStructPtr(arg)) {
+                    try writeConstStructValueType(w, arg);
+                } else {
+                    try writeType(w, arg.type, arg.pointer, arg.optional);
+                }
+            }
+
+            if (m.callback) |cb_ref| {
                 if (std.mem.startsWith(u8, cb_ref, "callback.")) {
                     const cb_name = cb_ref["callback.".len..];
                     const cb_pascal = blk: {
@@ -314,6 +337,7 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
                     try w.print("{s}CallbackInfo", .{cb_pascal});
                 }
             }
+
             try w.writeAll(")");
             if (m.returns) |ret| {
                 try w.writeAll(" ");
@@ -321,12 +345,176 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
             } else {
                 try w.writeAll(" void");
             }
-            try w.writeAll(";\n\n");
+            try w.writeAll(" {\n");
+
+            // Create lvalues for struct-by-value wrapper args so we can take pointers to the payload.
+            for (m.args) |arg| {
+                if (isConstStructPtr(arg)) {
+                    try w.writeAll("        var ");
+                    try writeIdentifier(w, arg.name, .snake);
+                    try w.writeAll("__opt = ");
+                    try writeIdentifier(w, arg.name, .snake);
+                    try w.writeAll(";\n");
+                }
+            }
+
+            // Call through to the private extern symbol.
+            try w.writeAll("        return ");
+            try w.writeAll("wgpu");
+            try w.writeAll(obj_pascal);
+            try writeIdentifier(w, m.name, .pascal);
+            try w.writeAll("(");
+            try w.writeAll("self");
+
+            for (m.args) |arg| {
+                if (std.mem.startsWith(u8, arg.type, "array<")) {
+                    try w.writeAll(", ");
+                    try writeIdentifier(w, arg.name, .snake);
+                    try w.writeAll(".len");
+                    try w.writeAll(", ");
+                    // arrays are nullable pointers in the ABI; pass null for empty slice
+                    try w.writeAll("if (");
+                    try writeIdentifier(w, arg.name, .snake);
+                    try w.writeAll(".len == 0) null else ");
+                    try writeIdentifier(w, arg.name, .snake);
+                    try w.writeAll(".ptr");
+                } else if (isInputStringType(arg.type)) {
+                    try w.writeAll(", ");
+                    try writeStringToStringExpr(w, arg);
+                } else if (isConstStructPtr(arg)) {
+                    try w.writeAll(", ");
+                    if (arg.optional != null and arg.optional.? == true) {
+                        try w.writeAll("if (");
+                        try writeIdentifier(w, arg.name, .snake);
+                        try w.writeAll("__opt) |*v| v else null");
+                    } else {
+                        try w.writeByte('&');
+                        try writeIdentifier(w, arg.name, .snake);
+                        try w.writeAll("__opt");
+                    }
+                } else {
+                    try w.writeAll(", ");
+                    try writeIdentifier(w, arg.name, .snake);
+                }
+            }
+            if (m.callback != null) {
+                try w.writeAll(", callback_info");
+            }
+            try w.writeAll(");\n");
+            try w.writeAll("    }\n\n");
         }
 
-        // Implicit ref-counting externs
-        try w.print("pub extern fn wgpu{s}AddRef(self: {s}) void;\n", .{ obj_pascal, obj_pascal });
-        try w.print("pub extern fn wgpu{s}Release(self: {s}) void;\n\n", .{ obj_pascal, obj_pascal });
+        // Refcount helpers
+        try w.writeAll("    extern fn wgpu");
+        try w.writeAll(obj_pascal);
+        try w.writeAll("AddRef(self: *@This()) void;\n");
+        try w.writeAll("    extern fn wgpu");
+        try w.writeAll(obj_pascal);
+        try w.writeAll("Release(self: *@This()) void;\n\n");
+
+        try w.writeAll("    pub inline fn retain(self: *@This()) void { wgpu");
+        try w.writeAll(obj_pascal);
+        try w.writeAll("AddRef(self); }\n");
+        try w.writeAll("    pub inline fn release(self: *@This()) void { wgpu");
+        try w.writeAll(obj_pascal);
+        try w.writeAll("Release(self); }\n");
+
+        try w.writeAll("};\n\n");
+    }
+
+    // ---- Extern declarations (API entrypoints) ----
+    // Free functions: private extern decl + public inline wrapper.
+    try w.writeAll("extern fn wgpuGetProcAddress(proc_name: String) Proc;\n");
+    try w.writeAll("pub inline fn getProcAddress(proc_name: []const u8) Proc { return wgpuGetProcAddress(String.from(proc_name)); }\n\n");
+
+    // Global functions from JSON
+    for (content.functions) |f| {
+        try writeIndented(alloc, w, '/', 3, "{s}", .{f.doc}, "{s}");
+        // private extern
+        try w.writeAll("extern fn ");
+        try writeWgpuGlobalName(w, f.name);
+        try w.writeAll("(");
+        try writeExternArgs(alloc, w, f.args);
+        try w.writeAll(")");
+        if (f.returns) |ret| {
+            try w.writeAll(" ");
+            try writeType(w, ret.type, ret.pointer, ret.optional);
+        } else {
+            try w.writeAll(" void");
+        }
+        try w.writeAll(";\n");
+
+        // public inline wrapper with slice/string ergonomics + optional const struct pointers as ?Struct
+        try w.writeAll("pub inline fn ");
+        try writeIdentifier(w, f.name, .camel);
+        try w.writeAll("(");
+        var first: bool = true;
+        for (f.args) |arg| {
+            if (!first) try w.writeAll(", ");
+            first = false;
+            try writeIdentifier(w, arg.name, .snake);
+            try w.writeAll(": ");
+            if (std.mem.startsWith(u8, arg.type, "array<")) {
+                try writeSliceType(w, arg);
+            } else if (isInputStringType(arg.type)) {
+                try writeStringSliceType(w, arg.type);
+            } else if (isConstStructPtr(arg)) {
+                try writeConstStructValueType(w, arg);
+            } else {
+                try writeType(w, arg.type, arg.pointer, arg.optional);
+            }
+        }
+        try w.writeAll(")");
+        if (f.returns) |ret| {
+            try w.writeAll(" ");
+            try writeType(w, ret.type, ret.pointer, ret.optional);
+        } else {
+            try w.writeAll(" void");
+        }
+        try w.writeAll(" {\n");
+
+        for (f.args) |arg| {
+            if (isConstStructPtr(arg)) {
+                try w.writeAll("    var ");
+                try writeIdentifier(w, arg.name, .snake);
+                try w.writeAll("__opt = ");
+                try writeIdentifier(w, arg.name, .snake);
+                try w.writeAll(";\n");
+            }
+        }
+
+        try w.writeAll("    return ");
+        try writeWgpuGlobalName(w, f.name);
+        try w.writeAll("(");
+        first = true;
+        for (f.args) |arg| {
+            if (!first) try w.writeAll(", ");
+            first = false;
+            if (std.mem.startsWith(u8, arg.type, "array<")) {
+                try writeIdentifier(w, arg.name, .snake);
+                try w.writeAll(".len, if (");
+                try writeIdentifier(w, arg.name, .snake);
+                try w.writeAll(".len == 0) null else ");
+                try writeIdentifier(w, arg.name, .snake);
+                try w.writeAll(".ptr");
+            } else if (isInputStringType(arg.type)) {
+                try writeStringToStringExpr(w, arg);
+            } else if (isConstStructPtr(arg)) {
+                if (arg.optional != null and arg.optional.? == true) {
+                    try w.writeAll("if (");
+                    try writeIdentifier(w, arg.name, .snake);
+                    try w.writeAll("__opt) |*v| v else null");
+                } else {
+                    try w.writeByte('&');
+                    try writeIdentifier(w, arg.name, .snake);
+                    try w.writeAll("__opt");
+                }
+            } else {
+                try writeIdentifier(w, arg.name, .snake);
+            }
+        }
+        try w.writeAll(");\n");
+        try w.writeAll("}\n\n");
     }
 
     // Implicit FreeMembers externs for structs that allocate output members.
@@ -338,7 +526,15 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
                 break :blk try name_w.toOwnedSlice();
             };
             defer alloc.free(s_pascal);
-            try w.print("pub extern fn wgpu{s}FreeMembers(value: {s}) void;\n\n", .{ s_pascal, s_pascal });
+            try w.print("extern fn wgpu{s}FreeMembers(value: {s}) void;\n", .{ s_pascal, s_pascal });
+            // wrapper name: <structName>FreeMembers (camelCase)
+            try w.writeAll("pub inline fn ");
+            try writeIdentifier(w, s.name, .camel);
+            try w.writeAll("FreeMembers(value: ");
+            try w.writeAll(s_pascal);
+            try w.writeAll(") void { wgpu");
+            try w.writeAll(s_pascal);
+            try w.writeAll("FreeMembers(value); }\n\n");
         }
     }
 }
@@ -373,7 +569,8 @@ fn writeType(
 
     if (primitive_types.get(base_type)) |prim| {
         // Primitive mappings are already valid Zig identifiers/types; don't case-transform.
-        if (is_optional) try w.writeByte('?');
+        // Arrays in the ABI are passed as nullable pointers (NULL when count == 0).
+        if (is_optional or is_array) try w.writeByte('?');
 
         if (is_array) {
             const ptr = pointer orelse .immutable;
@@ -394,6 +591,7 @@ fn writeType(
 
     var casing: Casing = .snake;
     var suffix: []const u8 = "";
+    var is_object_handle = false;
     const resolved = blk: {
         inline for ([_][]const u8{
             "typedef.",
@@ -407,6 +605,10 @@ fn writeType(
                 casing = .pascal;
                 if (std.mem.eql(u8, prefix, "callback.")) {
                     suffix = "Callback";
+                } else if (std.mem.eql(u8, prefix, "object.")) {
+                    // object.* types are already opaque pointer handles in the C API.
+                    // Model them as pointers to the Zig `opaque` type.
+                    is_object_handle = true;
                 }
                 break :blk base_type[prefix.len..];
             }
@@ -414,7 +616,8 @@ fn writeType(
         break :blk base_type;
     };
 
-    if (is_optional) try w.writeByte('?');
+    // Arrays in the ABI are passed as nullable pointers (NULL when count == 0).
+    if (is_optional or is_array) try w.writeByte('?');
 
     if (is_array) {
         const ptr = pointer orelse .immutable;
@@ -422,15 +625,84 @@ fn writeType(
             .immutable => try w.writeAll("[*]const "),
             .mutable => try w.writeAll("[*]"),
         }
-    } else if (pointer) |ptr| {
-        switch (ptr) {
-            .immutable => try w.writeAll("*const "),
-            .mutable => try w.writeAll("*"),
+    } else if (!is_object_handle) {
+        if (pointer) |ptr| {
+            switch (ptr) {
+                .immutable => try w.writeAll("*const "),
+                .mutable => try w.writeAll("*"),
+            }
         }
     }
 
+    if (is_object_handle) {
+        // object handles are pointer types regardless of pointer metadata.
+        try w.writeByte('*');
+    }
     try writeIdentifier(w, resolved, casing);
     if (suffix.len != 0) try w.writeAll(suffix);
+}
+
+fn writeSliceType(w: *std.Io.Writer, p: Schema.Function.Parameter) !void {
+    std.debug.assert(std.mem.startsWith(u8, p.type, "array<"));
+    const base_type = p.type["array<".len .. p.type.len - 1];
+    const is_mut = p.pointer != null and p.pointer.? == .mutable;
+    if (is_mut) {
+        try w.writeAll("[]");
+    } else {
+        try w.writeAll("[]const ");
+    }
+    try writeType(w, base_type, null, null);
+}
+
+fn isInputStringType(type_str: []const u8) bool {
+    // String-like inputs we want as slices in wrappers.
+    return std.mem.eql(u8, type_str, "nullable_string") or
+        std.mem.eql(u8, type_str, "string_with_default_empty");
+}
+
+fn isConstStructPtr(p: Schema.Function.Parameter) bool {
+    // Pattern in the schema for "pointer to input struct" (optional or not).
+    // We expose these as Struct / ?Struct in the wrapper for nicer `.{} ` init autocomplete,
+    // and then pass *const Struct / ?*const Struct to the extern.
+    if (!(p.pointer != null and p.pointer.? == .immutable)) return false;
+    return std.mem.startsWith(u8, p.type, "struct.");
+}
+
+fn writeConstStructValueType(w: *std.Io.Writer, p: Schema.Function.Parameter) !void {
+    std.debug.assert(isConstStructPtr(p));
+    if (p.optional != null and p.optional.? == true) try w.writeByte('?');
+    const base = p.type["struct.".len..];
+    try writeIdentifier(w, base, .pascal);
+}
+
+fn writeStringSliceType(w: *std.Io.Writer, type_str: []const u8) !void {
+    if (std.mem.eql(u8, type_str, "nullable_string")) {
+        try w.writeAll("?[]const u8");
+    } else if (std.mem.eql(u8, type_str, "string_with_default_empty")) {
+        // Allow null to mean "use default empty semantics".
+        try w.writeAll("?[]const u8");
+    } else {
+        // Fallback: shouldn't happen for now.
+        try w.writeAll("[]const u8");
+    }
+}
+
+fn writeStringToStringExpr(w: *std.Io.Writer, p: Schema.Function.Parameter) !void {
+    // Wrapper arg is ?[]const u8; convert to String with correct sentinel behavior.
+    if (std.mem.eql(u8, p.type, "nullable_string")) {
+        try w.writeAll("if (");
+        try writeIdentifier(w, p.name, .snake);
+        try w.writeAll(") |s| String.from(s) else String.NULL");
+        return;
+    }
+    if (std.mem.eql(u8, p.type, "string_with_default_empty")) {
+        try w.writeAll("if (");
+        try writeIdentifier(w, p.name, .snake);
+        try w.writeAll(") |s| String.from(s) else String.EMPTY");
+        return;
+    }
+    // Shouldn't be reached: fall back to passing through.
+    try writeIdentifier(w, p.name, .snake);
 }
 
 fn writeExternArgs(allocator: std.mem.Allocator, w: *std.Io.Writer, args: []const Schema.Function.Parameter) !void {
