@@ -19,6 +19,9 @@ pub fn build(b: *std.Build) !void {
     const run_gen = b.addRunArtifact(gen);
     run_gen.addFileArg(webgpu_headers_json);
     run_gen.addArg(try b.build_root.join(b.allocator, &.{ "src", "bindings.zig" }));
+    if (b.args) |args| {
+        run_gen.addArgs(args);
+    }
     const run_gen_step = b.step("gen", "Generate Zig bindings");
     run_gen_step.dependOn(&run_gen.step);
 }

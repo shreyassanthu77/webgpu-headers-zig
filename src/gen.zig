@@ -47,7 +47,18 @@ const prelude =
     \\
 ;
 
-fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.Io.Writer) !void {
+const ExtraSTypeEntry = struct {
+    name: []const u8,
+    value: u32,
+    source: []const u8,
+};
+
+fn gen(
+    allocator: std.mem.Allocator,
+    webgpu_json_contents: []const u8,
+    extra_stype_entries: []const ExtraSTypeEntry,
+    w: *std.Io.Writer,
+) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -100,6 +111,48 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
             }
             if (j < e.entries.len - 1) {
                 try w.writeByte('\n');
+            }
+        }
+
+        // Allow merging implementation-specific extension STypes from external headers.
+        // The spec calls WGPUSType an "open enum".
+        if (std.mem.eql(u8, e.name, "s_type") and extra_stype_entries.len != 0) {
+            try w.writeByte('\n');
+            // De-dupe against existing names emitted above by tracking a simple set of snake-case names.
+            var seen = std.StringHashMapUnmanaged(void){};
+            defer seen.deinit(alloc);
+
+            // Seed with core entries.
+            for (e.entries) |maybe_entry| {
+                const entry = maybe_entry orelse continue;
+                var tmp = std.Io.Writer.Allocating.init(alloc);
+                defer tmp.deinit();
+                try writeIdentifier(&tmp.writer, entry.name, .snake);
+                const key = try tmp.toOwnedSlice();
+                if (!seen.contains(key)) {
+                    // NOTE: StringHashMapUnmanaged stores the key slice; do not free it.
+                    try seen.put(alloc, key, {});
+                }
+            }
+
+            for (extra_stype_entries) |ex| {
+                var tmp = std.Io.Writer.Allocating.init(alloc);
+                defer tmp.deinit();
+                try writeIdentifier(&tmp.writer, ex.name, .snake);
+                const key = try tmp.toOwnedSlice();
+                if (seen.contains(key)) {
+                    // Not inserted, safe to free.
+                    alloc.free(key);
+                    continue;
+                }
+                // Inserted; do not free.
+                try seen.put(alloc, key, {});
+
+                try w.splatByteAll(' ', 4);
+                try w.print("/// Implementation extension SType (from {s}).\n", .{ex.source});
+                try w.splatByteAll(' ', 4);
+                try writeIdentifier(w, ex.name, .snake);
+                try w.print(" = 0x{X:0>8},\n\n", .{ex.value});
             }
         }
         try writeIndented(alloc, w, ' ', 4, "\n_,", .{}, "{s}");
@@ -535,7 +588,6 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
         try w.writeAll(");\n");
         try w.writeAll("}\n\n");
     }
-
 }
 
 const primitive_types = std.StaticStringMap([]const u8).initComptime(&.{
@@ -1072,8 +1124,72 @@ pub fn main() !void {
     var out_buf: [1024 * 1024]u8 = undefined;
     var out_writer = (std.fs.File{ .handle = output_file.handle }).writer(&out_buf);
 
-    try gen(gpa, webgpu_json_contents, &out_writer.interface);
+    // Remaining args: optional extra headers containing WGPUSType_* extension values
+    var extra_list = std.ArrayListUnmanaged(ExtraSTypeEntry){};
+    defer {
+        for (extra_list.items) |it| {
+            gpa.free(it.name);
+            gpa.free(it.source);
+        }
+        extra_list.deinit(gpa);
+    }
+
+    while (args.next()) |extra_path| {
+        const extra_file = try std.Io.Dir.cwd().openFile(io, extra_path, .{});
+        defer extra_file.close(io);
+        const extra_contents = try readFile(io, gpa, extra_file);
+        defer gpa.free(extra_contents);
+        try parseExtraSTypeEntries(gpa, &extra_list, extra_contents, extra_path);
+    }
+
+    try gen(gpa, webgpu_json_contents, extra_list.items, &out_writer.interface);
     try out_writer.interface.flush();
+}
+
+fn parseExtraSTypeEntries(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(ExtraSTypeEntry),
+    header: []const u8,
+    source_path: []const u8,
+) !void {
+    // Parse occurrences of: WGPUSType_<Name> = <number>;
+    // Works for wgpu-native's WGPUNativeSType enum as well.
+    var i: usize = 0;
+    while (true) {
+        const idx = std.mem.indexOfPos(u8, header, i, "WGPUSType_") orelse break;
+        i = idx + "WGPUSType_".len;
+        const start = i;
+        while (i < header.len) : (i += 1) {
+            const c = header[i];
+            if (!(std.ascii.isAlphanumeric(c) or c == '_')) break;
+        }
+        if (i == start) continue;
+        const name = header[start..i];
+
+        // Skip whitespace
+        while (i < header.len and std.ascii.isWhitespace(header[i])) : (i += 1) {}
+        if (i >= header.len or header[i] != '=') continue;
+        i += 1;
+        while (i < header.len and std.ascii.isWhitespace(header[i])) : (i += 1) {}
+        const value_start = i;
+        while (i < header.len) : (i += 1) {
+            const c = header[i];
+            if (std.ascii.isWhitespace(c) or c == ',' or c == ';') break;
+        }
+        if (i == value_start) continue;
+        const value_tok = header[value_start..i];
+
+        const value: u32 = if (std.mem.startsWith(u8, value_tok, "0x") or std.mem.startsWith(u8, value_tok, "0X"))
+            try std.fmt.parseInt(u32, value_tok[2..], 16)
+        else
+            try std.fmt.parseInt(u32, value_tok, 10);
+
+        try out.append(allocator, .{
+            .name = try allocator.dupe(u8, name),
+            .value = value,
+            .source = try allocator.dupe(u8, source_path),
+        });
+    }
 }
 
 fn readFile(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File) ![]const u8 {
