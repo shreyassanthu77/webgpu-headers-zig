@@ -243,8 +243,27 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
             try writeIdentifier(w, member.name, .snake);
             try w.print(": ", .{});
             try writeType(w, member.type, member.pointer, member.optional);
+            try writeStructMemberDefault(w, member);
             try w.writeAll(",\n");
         }
+
+        // If the API allocates members of this struct, attach FreeMembers next to the type.
+        if (s.free_members != null and s.free_members.? == true) {
+            const s_pascal = blk: {
+                var name_w = std.Io.Writer.Allocating.init(alloc);
+                try writeIdentifier(&name_w.writer, s.name, .pascal);
+                break :blk try name_w.toOwnedSlice();
+            };
+            defer alloc.free(s_pascal);
+
+            try w.writeAll("\n");
+            try w.writeAll("    /// Frees members which were allocated by the API.\n");
+            try w.print("    extern fn wgpu{s}FreeMembers(value: @This()) void;\n", .{s_pascal});
+            try w.writeAll("    pub inline fn freeMembers(self: *@This()) void {\n");
+            try w.print("        wgpu{s}FreeMembers(self.*);\n", .{s_pascal});
+            try w.writeAll("    }\n");
+        }
+
         try w.writeAll("};\n\n");
     }
 
@@ -517,26 +536,6 @@ fn gen(allocator: std.mem.Allocator, webgpu_json_contents: []const u8, w: *std.I
         try w.writeAll("}\n\n");
     }
 
-    // Implicit FreeMembers externs for structs that allocate output members.
-    for (content.structs) |s| {
-        if (s.free_members != null and s.free_members.? == true) {
-            const s_pascal = blk: {
-                var name_w = std.Io.Writer.Allocating.init(alloc);
-                try writeIdentifier(&name_w.writer, s.name, .pascal);
-                break :blk try name_w.toOwnedSlice();
-            };
-            defer alloc.free(s_pascal);
-            try w.print("extern fn wgpu{s}FreeMembers(value: {s}) void;\n", .{ s_pascal, s_pascal });
-            // wrapper name: <structName>FreeMembers (camelCase)
-            try w.writeAll("pub inline fn ");
-            try writeIdentifier(w, s.name, .camel);
-            try w.writeAll("FreeMembers(value: ");
-            try w.writeAll(s_pascal);
-            try w.writeAll(") void { wgpu");
-            try w.writeAll(s_pascal);
-            try w.writeAll("FreeMembers(value); }\n\n");
-        }
-    }
 }
 
 const primitive_types = std.StaticStringMap([]const u8).initComptime(&.{
@@ -652,6 +651,114 @@ fn writeSliceType(w: *std.Io.Writer, p: Schema.Function.Parameter) !void {
         try w.writeAll("[]const ");
     }
     try writeType(w, base_type, null, null);
+}
+
+fn writeStructMemberDefault(w: *std.Io.Writer, member: Schema.Function.Parameter) !void {
+    // Prefer schema-provided defaults, then fill in common ergonomic defaults
+    // so `.{} ` works similarly to the C `*_INIT` macros.
+    if (member.default) |d| {
+        try w.writeAll(" = ");
+        try writeDefaultValue(w, member, d);
+        return;
+    }
+
+    const is_array = std.mem.startsWith(u8, member.type, "array<");
+    const is_optional = member.optional != null and member.optional.? == true;
+
+    // Strings
+    if (std.mem.eql(u8, member.type, "string_with_default_empty")) {
+        try w.writeAll(" = String.EMPTY");
+        return;
+    }
+    if (std.mem.eql(u8, member.type, "nullable_string")) {
+        try w.writeAll(" = String.NULL");
+        return;
+    }
+
+    // Optional pointers and arrays (pointers) default to null.
+    if (is_optional or is_array) {
+        try w.writeAll(" = null");
+        return;
+    }
+}
+
+fn writeDefaultValue(
+    w: *std.Io.Writer,
+    member: Schema.Function.Parameter,
+    d: Schema.Function.Parameter.Default,
+) !void {
+    switch (d) {
+        .boolean => |b| {
+            // Used for bool / Bool fields.
+            try w.writeAll(if (b) ".true" else ".false");
+        },
+        .number => |n| {
+            // Heuristic: if it looks integral, print without decimals.
+            const as_int = @as(i64, @intFromFloat(n));
+            if (@as(f64, @floatFromInt(as_int)) == n) {
+                try w.print("{d}", .{as_int});
+            } else {
+                try w.print("{d}", .{n});
+            }
+        },
+        .string => |s| {
+            // Special tokens used by webgpu-headers defaults.
+            if (std.mem.eql(u8, s, "none")) {
+                // Bitflags: all-false.
+                try w.writeAll(".{}");
+                return;
+            }
+            if (std.mem.eql(u8, s, "zero")) {
+                // For nested structs, match the C INIT macros' "zero init".
+                // Use `std.mem.zeroes(T)` so we don't depend on per-field defaults.
+                if (std.mem.startsWith(u8, member.type, "struct.")) {
+                    try w.writeAll("std.mem.zeroes(");
+                    try writeIdentifier(w, member.type["struct.".len..], .pascal);
+                    try w.writeAll(")");
+                    return;
+                }
+                // For other types, zero literal is usually fine.
+                try w.writeAll("0");
+                return;
+            }
+            if (std.mem.eql(u8, s, "all")) {
+                // Use the generated combination constant when present.
+                if (std.mem.startsWith(u8, member.type, "bitflag.")) {
+                    try writeIdentifier(w, member.type["bitflag.".len..], .pascal);
+                    try w.writeAll(".all");
+                    return;
+                }
+                try w.writeAll(".all");
+                return;
+            }
+            if (std.mem.startsWith(u8, s, "constant.")) {
+                try writeIdentifier(w, s["constant.".len..], .snake);
+                return;
+            }
+            if (std.mem.startsWith(u8, s, "0x")) {
+                // Hex integer literal.
+                try w.writeAll(s);
+                return;
+            }
+
+            // Enum tags (e.g. "auto") and single-bit bitflag defaults (e.g. "render_attachment").
+            if (std.mem.startsWith(u8, member.type, "enum.")) {
+                try w.writeByte('.');
+                try writeIdentifier(w, s, .snake);
+                return;
+            }
+            if (std.mem.startsWith(u8, member.type, "bitflag.")) {
+                // Set just this one bit.
+                try w.writeAll(".{ .");
+                try writeIdentifier(w, s, .snake);
+                try w.writeAll(" = true }");
+                return;
+            }
+
+            // Fallback: treat as a bare identifier.
+            try w.writeAll(s);
+        },
+    }
 }
 
 fn isInputStringType(type_str: []const u8) bool {
