@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) !void {
     const gen = b.addExecutable(.{
         .name = "gen-bindings",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("gen.zig"),
+            .root_source_file = b.path("src/gen.zig"),
             .target = b.graph.host,
         }),
     });
