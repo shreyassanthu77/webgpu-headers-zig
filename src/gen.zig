@@ -198,6 +198,66 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("Release;\n");
         try writer.writeAll("};\n\n");
     }
+
+    try writer.writeAll("pub const ChainedStruct = extern struct {\n");
+    try writer.writeAll("    next: ?*ChainedStruct = null,\n");
+    try writer.writeAll("    s_type: SType = @enumFromInt(0),\n");
+    try writer.writeAll("};\n\n");
+
+    for (schema.structs) |str| {
+        try writeDocString(writer, str.doc, 0);
+        try writer.writeAll("pub const ");
+        try writeIdent(writer, str.name, .pascal);
+        try writer.writeAll(" = extern struct {\n");
+
+        switch (str.type) {
+            .extensible, .extensible_callback_arg => {
+                try writer.writeAll("    next_in_chain: ?*ChainedStruct = null,\n");
+            },
+            .extension => {
+                try writer.writeAll("    chain: ChainedStruct = .{ .s_type = .");
+                try writeIdent(writer, str.name, .snake);
+                try writer.writeAll(" },\n");
+            },
+            .standalone => {},
+        }
+
+        for (str.members) |member| {
+            const type_str = member.type;
+            if (std.mem.startsWith(u8, type_str, "array<")) {
+                // array<T> becomes two fields: count (usize) + pointer (?[*]const T)
+                const inner = type_str["array<".len .. type_str.len - 1];
+
+                // Count field: {name}_count or special naming
+                try writer.writeAll("    ");
+                try writeIdent(writer, member.name, .snake);
+                try writer.writeAll("_count: usize = 0,\n");
+
+                // Pointer field
+                try writeDocString(writer, member.doc, 1);
+                try writer.writeAll("    ");
+                try writeIdent(writer, member.name, .snake);
+                try writer.writeAll(": ?[*]const ");
+                try writeTypeInner(writer, inner, false);
+                try writer.writeAll(" = null,\n");
+            } else {
+                try writeDocString(writer, member.doc, 1);
+                try writer.writeAll("    ");
+                try writeIdent(writer, member.name, .snake);
+                try writer.writeAll(": ");
+                try writeMemberType(writer, member);
+                if (try writeMemberDefault(writer, member)) {
+                    // default was written
+                } else {
+                    // No explicit default: zero-init enums/structs/objects as appropriate
+                    try writeImplicitDefault(writer, member);
+                }
+                try writer.writeAll(",\n");
+            }
+        }
+
+        try writer.writeAll("};\n\n");
+    }
 }
 
 fn writeDocString(writer: *std.Io.Writer, str: []const u8, indent: usize) !void {
@@ -237,6 +297,263 @@ fn writeCase(writer: *std.Io.Writer, str: []const u8, comptime case: Case) !void
         const ch = if (capitalize) std.ascii.toUpper(c) else c;
         try writer.writeByte(ch);
         capitalize = false;
+    }
+}
+
+fn writeMemberType(writer: *std.Io.Writer, member: Schema.Parameter) !void {
+    const type_str = member.type;
+
+    // Handle array types: array<T> becomes count + pointer pair
+    // But we handle these as two fields, so array types are split in the caller.
+    // Actually, looking at the C header, array<T> becomes count: usize + ptr: ?[*]const T
+    // But the JSON has these as single members. The C generator splits them.
+    // For Zig we need to handle this: the member type is the pointer part,
+    // and we need to emit the count field before it.
+
+    if (std.mem.startsWith(u8, type_str, "array<")) {
+        // array types should be handled before calling writeMemberType
+        unreachable;
+    }
+
+    // Handle pointer wrapping
+    const is_optional = member.optional;
+    const pointer = member.pointer;
+
+    if (pointer != .none) {
+        if (is_optional) {
+            try writer.writeAll("?");
+        }
+        switch (pointer) {
+            .immutable => try writer.writeAll("[*]const "),
+            .mutable => try writer.writeAll("[*]"),
+            .none => unreachable,
+        }
+    } else if (is_optional) {
+        // Optional non-pointer object types are nullable pointers already
+        // For non-object types, optional means something different
+        if (std.mem.startsWith(u8, type_str, "object.")) {
+            // object types are already pointers, optional makes them nullable
+            // handled below
+        } else {
+            try writer.writeAll("?");
+        }
+    }
+
+    try writeTypeInner(writer, type_str, is_optional);
+}
+
+fn writeTypeInner(writer: *std.Io.Writer, type_str: []const u8, optional: bool) !void {
+    if (std.mem.eql(u8, type_str, "uint32")) {
+        try writer.writeAll("u32");
+    } else if (std.mem.eql(u8, type_str, "uint64")) {
+        try writer.writeAll("u64");
+    } else if (std.mem.eql(u8, type_str, "int32")) {
+        try writer.writeAll("i32");
+    } else if (std.mem.eql(u8, type_str, "uint16")) {
+        try writer.writeAll("u16");
+    } else if (std.mem.eql(u8, type_str, "float32") or std.mem.eql(u8, type_str, "nullable_float32")) {
+        try writer.writeAll("f32");
+    } else if (std.mem.eql(u8, type_str, "float64_supertype")) {
+        try writer.writeAll("f64");
+    } else if (std.mem.eql(u8, type_str, "usize")) {
+        try writer.writeAll("usize");
+    } else if (std.mem.eql(u8, type_str, "bool")) {
+        try writer.writeAll("Bool");
+    } else if (std.mem.eql(u8, type_str, "optional_bool") or std.mem.eql(u8, type_str, "enum.optional_bool")) {
+        try writer.writeAll("Bool.Optional");
+    } else if (std.mem.eql(u8, type_str, "string_with_default_empty") or
+        std.mem.eql(u8, type_str, "out_string") or
+        std.mem.eql(u8, type_str, "nullable_string"))
+    {
+        try writer.writeAll("String");
+    } else if (std.mem.eql(u8, type_str, "c_void")) {
+        try writer.writeAll("anyopaque");
+    } else if (std.mem.startsWith(u8, type_str, "enum.")) {
+        const name = type_str["enum.".len..];
+        if (std.mem.eql(u8, name, "optional_bool")) {
+            try writer.writeAll("Bool.Optional");
+        } else {
+            try writeIdent(writer, name, .pascal);
+        }
+    } else if (std.mem.startsWith(u8, type_str, "struct.")) {
+        const name = type_str["struct.".len..];
+        try writeIdent(writer, name, .pascal);
+    } else if (std.mem.startsWith(u8, type_str, "object.")) {
+        const name = type_str["object.".len..];
+        if (optional) {
+            try writer.writeAll("?*");
+        } else {
+            try writer.writeAll("*");
+        }
+        try writeIdent(writer, name, .pascal);
+    } else if (std.mem.startsWith(u8, type_str, "bitflag.")) {
+        const name = type_str["bitflag.".len..];
+        try writeIdent(writer, name, .pascal);
+    } else if (std.mem.startsWith(u8, type_str, "callback.")) {
+        // Callback info struct types - these are passed by value in C
+        // The naming pattern is the callback name + "CallbackInfo"
+        const name = type_str["callback.".len..];
+        try writeIdent(writer, name, .pascal);
+        try writer.writeAll("CallbackInfo");
+    } else {
+        log.err("Unknown type: {s}", .{type_str});
+        try writer.writeAll("@\"UNKNOWN_");
+        try writer.writeAll(type_str);
+        try writer.writeAll("\"");
+    }
+}
+
+fn writeMemberDefault(writer: *std.Io.Writer, member: Schema.Parameter) !bool {
+    const default = member.default;
+    const type_str = member.type;
+
+    switch (default) {
+        .null => return false, // no explicit default
+        .bool => |b| {
+            // bool defaults: false/true → .false/.true (for Bool type)
+            if (std.mem.eql(u8, type_str, "bool")) {
+                if (b) {
+                    try writer.writeAll(" = .true");
+                } else {
+                    try writer.writeAll(" = .false");
+                }
+            } else {
+                if (b) {
+                    try writer.writeAll(" = true");
+                } else {
+                    try writer.writeAll(" = false");
+                }
+            }
+            return true;
+        },
+        .integer => |i| {
+            try writer.print(" = {d}", .{i});
+            return true;
+        },
+        .float => |f| {
+            try writer.print(" = {d}", .{f});
+            return true;
+        },
+        .string => |s| {
+            // String defaults like "constant.X", "none", "all", "auto", "zero", "render_attachment"
+            if (std.mem.startsWith(u8, s, "constant.")) {
+                const name = s["constant.".len..];
+                try writer.writeAll(" = ");
+                try writeIdent(writer, name, .snake);
+            } else if (std.mem.eql(u8, s, "zero")) {
+                // zero-init the struct
+                try writer.writeAll(" = .{}");
+            } else if (std.mem.eql(u8, s, "none")) {
+                // For bitflags, none = .{}; for enums it's different
+                if (std.mem.startsWith(u8, type_str, "bitflag.")) {
+                    try writer.writeAll(" = .{}");
+                } else {
+                    try writer.writeAll(" = .none");
+                }
+            } else if (std.mem.startsWith(u8, s, "0x")) {
+                // Hex literal like "0xFFFFFFFF"
+                try writer.writeAll(" = ");
+                try writer.writeAll(s);
+            } else {
+                // Enum value like "auto", "all", "render_attachment"
+                try writer.writeAll(" = .");
+                try writeIdent(writer, s, .snake);
+            }
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void {
+    const type_str = member.type;
+
+    // Pointer types (including optional pointers) — must check before type-specific defaults
+    if (member.pointer != .none) {
+        if (member.optional) {
+            try writer.writeAll(" = null");
+        }
+        return;
+    }
+
+    // Optional non-pointer types
+    if (member.optional) {
+        // Optional objects are already nullable pointers
+        if (std.mem.startsWith(u8, type_str, "object.")) {
+            try writer.writeAll(" = null");
+            return;
+        }
+        try writer.writeAll(" = null");
+        return;
+    }
+
+    // String types default to String.NULL
+    if (std.mem.eql(u8, type_str, "string_with_default_empty") or
+        std.mem.eql(u8, type_str, "out_string") or
+        std.mem.eql(u8, type_str, "nullable_string"))
+    {
+        try writer.writeAll(" = String.NULL");
+        return;
+    }
+
+    // Non-optional object types: no default (they're required fields)
+    if (std.mem.startsWith(u8, type_str, "object.")) {
+        return;
+    }
+
+    // Numeric types default to 0
+    if (std.mem.eql(u8, type_str, "uint32") or
+        std.mem.eql(u8, type_str, "uint64") or
+        std.mem.eql(u8, type_str, "int32") or
+        std.mem.eql(u8, type_str, "uint16") or
+        std.mem.eql(u8, type_str, "usize"))
+    {
+        try writer.writeAll(" = 0");
+        return;
+    }
+    if (std.mem.eql(u8, type_str, "float32") or std.mem.eql(u8, type_str, "nullable_float32")) {
+        try writer.writeAll(" = 0.0");
+        return;
+    }
+    if (std.mem.eql(u8, type_str, "float64_supertype")) {
+        try writer.writeAll(" = 0.0");
+        return;
+    }
+
+    // Bool type defaults to .false
+    if (std.mem.eql(u8, type_str, "bool")) {
+        try writer.writeAll(" = .false");
+        return;
+    }
+
+    // optional_bool defaults to .undefined
+    if (std.mem.eql(u8, type_str, "optional_bool") or std.mem.eql(u8, type_str, "enum.optional_bool")) {
+        try writer.writeAll(" = .undefined");
+        return;
+    }
+
+    // Enum types default to the zero value (first variant or undefined)
+    if (std.mem.startsWith(u8, type_str, "enum.")) {
+        try writer.writeAll(" = @enumFromInt(0)");
+        return;
+    }
+
+    // Bitflag types default to none (.{})
+    if (std.mem.startsWith(u8, type_str, "bitflag.")) {
+        try writer.writeAll(" = .{}");
+        return;
+    }
+
+    // Struct types default to .{}
+    if (std.mem.startsWith(u8, type_str, "struct.")) {
+        try writer.writeAll(" = .{}");
+        return;
+    }
+
+    // Callback info types default to .{}
+    if (std.mem.startsWith(u8, type_str, "callback.")) {
+        try writer.writeAll(" = .{}");
+        return;
     }
 }
 
