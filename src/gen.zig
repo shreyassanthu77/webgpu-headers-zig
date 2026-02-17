@@ -108,10 +108,9 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         }
     }
 
-    try writer.writeAll(
-        \\const std = @import("std");
-        \\
-    );
+    const prelude = @embedFile("./prelude.zig");
+    try writer.writeAll(prelude);
+    try writer.writeAll("\n");
 }
 
 ////////////////////////////////////////////////////////////////////////////////

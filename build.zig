@@ -28,4 +28,15 @@ pub fn build(b: *std.Build) !void {
     const write_step = b.step("write", "Writes the bindings to the build directory");
     const temp_out = b.addInstallFile(output_file, "./bindings.zig");
     write_step.dependOn(&temp_out.step);
+
+    const test_step = b.step("test", "Runs the tests");
+    const test_prelude = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/prelude.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_test_prelude = b.addRunArtifact(test_prelude);
+    test_step.dependOn(&run_test_prelude.step);
 }
