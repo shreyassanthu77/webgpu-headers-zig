@@ -111,6 +111,32 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
     const prelude = @embedFile("./prelude.zig");
     try writer.writeAll(prelude);
     try writer.writeAll("\n");
+
+    for (schema.constants) |constant| {
+        try writer.writeAll("pub const ");
+        try writeCase(writer, constant.name, .snake);
+        try writer.writeAll(" = ");
+        try writer.writeAll(constant.value);
+        try writer.writeAll(";\n");
+    }
+}
+
+const Case = enum { camel, pascal, snake };
+fn writeCase(writer: *std.Io.Writer, str: []const u8, comptime case: Case) !void {
+    if (case == .snake) {
+        try writer.writeAll(str);
+        return;
+    }
+    var capitalize = case == .pascal;
+    for (str) |c| {
+        if (c == '_') {
+            capitalize = true;
+            continue;
+        }
+        const ch = if (capitalize) std.ascii.toUpper(c) else c;
+        try writer.writeByte(ch);
+        capitalize = false;
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

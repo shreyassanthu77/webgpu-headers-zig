@@ -83,6 +83,15 @@ pub const String = extern struct {
     pub const WGPU_STRLEN = std.math.maxInt(usize);
 };
 
+const uint32_max = std.math.maxInt(u32);
+const uint64_max = std.math.maxInt(u64);
+const usize_max = std.math.maxInt(usize);
+const nan =
+    if (builtin.zig_version.major == 0 and builtin.zig_version.minor >= 16)
+        std.zig.c_translation.builtins.nanf("")
+    else
+        std.zig.c_builtins.nanf("");
+
 comptime {
     std.testing.refAllDecls(@This());
 }
