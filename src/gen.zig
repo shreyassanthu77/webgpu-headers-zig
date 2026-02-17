@@ -119,6 +119,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
     try writer.writeAll("\n");
 
     for (schema.bitflags) |bitflag| {
+        try writeDocString(writer, bitflag.doc, 0);
         try writer.writeAll("pub const ");
         try writeIdent(writer, bitflag.name, .pascal);
         try writer.writeAll(" = packed struct(u32) {\n");
@@ -130,6 +131,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
                 continue;
             }
 
+            try writeDocString(writer, entry.doc, 1);
             try writer.writeAll("    ");
             try writeIdent(writer, entry.name, .snake);
             try writer.writeAll(": bool = false,\n");
@@ -144,6 +146,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("    pub const none = .{};\n");
         for (bitflag.entries) |entry| {
             const combos = entry.value_combination orelse continue;
+            try writeDocString(writer, entry.doc, 1);
             try writer.writeAll("    pub const ");
             try writeIdent(writer, entry.name, .snake);
             try writer.writeAll(" = .{\n");
@@ -159,13 +162,17 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
     }
 
     for (schema.enums) |en| {
+        if (std.mem.eql(u8, en.name, "optional_bool")) continue;
+
         var value: u32 = 0;
+        try writeDocString(writer, en.doc, 0);
         try writer.writeAll("pub const ");
         try writeIdent(writer, en.name, .pascal);
         try writer.writeAll(" = enum(u32) {\n");
         for (en.entries) |entry| {
             defer value += 1;
             const e = entry orelse continue;
+            try writeDocString(writer, e.doc, 1);
             try writer.writeAll("    ");
             try writeIdent(writer, e.name, .snake);
             try writer.writeAll(",\n");
@@ -178,16 +185,30 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
     for (schema.objects) |obj| {
         std.debug.assert(!obj.is_struct);
 
+        try writeDocString(writer, obj.doc, 0);
         try writer.writeAll("pub const ");
         try writeIdent(writer, obj.name, .pascal);
         try writer.writeAll(" = opaque* {\n");
         try writer.writeAll("    extern fn wgpu");
         try writeIdent(writer, obj.name, .pascal);
         try writer.writeAll("Release(self: @This()) callconv(.c) void;\n");
+        try writer.writeAll("    /// Releases the object and its underlying resources.\n");
         try writer.writeAll("    pub const release = wgpu");
         try writeIdent(writer, obj.name, .pascal);
         try writer.writeAll("Release;\n");
         try writer.writeAll("};\n\n");
+    }
+}
+
+fn writeDocString(writer: *std.Io.Writer, str: []const u8, indent: usize) !void {
+    if (str.len == 0 or std.mem.eql(u8, str, "TODO\n")) return;
+
+    var lines = std.mem.splitScalar(u8, str, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \n");
+        if (trimmed.len == 0) continue;
+        try writer.splatByteAll(' ', indent * 4);
+        try writer.print("/// {s}\n", .{line});
     }
 }
 
