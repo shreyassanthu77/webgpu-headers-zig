@@ -11,7 +11,12 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
     );
 }
 
-fn mainV15() !void {
+////////////////////////////////////////////////////////////////////////////////
+// Main
+// Some nonsense stuff to make it work with both Zig 0.15 and 0.16
+////////////////////////////////////////////////////////////////////////////////
+
+fn lessJuicyMain() !void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer std.debug.assert(gpa_state.deinit() == .ok);
     const gpa = gpa_state.allocator();
@@ -41,7 +46,7 @@ fn mainV15() !void {
     try out_writer.interface.flush();
 }
 
-fn mainV16(init: std.process.Init) !void {
+fn juicyMain(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
@@ -70,5 +75,8 @@ fn mainV16(init: std.process.Init) !void {
     try out_writer.interface.flush();
 }
 
-pub const main =
-    if (builtin.zig_version.minor <= 15) mainV15 else mainV16;
+pub const main = switch (builtin.zig_version.minor) {
+    0...14 => @compileError("At least Zig 0.15 is required"),
+    15 => lessJuicyMain,
+    else => juicyMain,
+};
