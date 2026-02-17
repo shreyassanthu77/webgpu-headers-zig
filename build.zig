@@ -1,24 +1,31 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
+    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    // const target = b.standardTargetOptions(.{});
 
     const webgpu_headers_dep = b.dependency("webgpu_headers", .{});
     const webgpu_headers_json = webgpu_headers_dep.path("webgpu.json");
 
     const gen = b.addExecutable(.{
-        .name = "Generate Zig bindings",
+        .name = "gen-bindings",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/gen.zig"),
+            .root_source_file = b.path("gen.zig"),
             .target = b.graph.host,
-            .optimize = optimize,
         }),
     });
 
     const run_gen = b.addRunArtifact(gen);
     run_gen.addFileArg(webgpu_headers_json);
-    run_gen.addArg(try b.build_root.join(b.allocator, &.{ "src", "bindings.zig" }));
-    const run_gen_step = b.step("gen", "Generate Zig bindings");
-    run_gen_step.dependOn(&run_gen.step);
+    const output_file = run_gen.addOutputFileArg("bindings.zig");
+    b.getInstallStep().dependOn(&run_gen.step);
+    _ = b.addModule("webgpu", .{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = output_file,
+    });
+
+    const write_step = b.step("write", "Writes the bindings to the build directory");
+    const temp_out = b.addInstallFile(output_file, "./bindings.zig");
+    write_step.dependOn(&temp_out.step);
 }

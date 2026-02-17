@@ -6,8 +6,8 @@
     .fingerprint = 0x41541123a9d9d139,
     .dependencies = .{
         .webgpu_headers = .{
-            .url = "git+https://github.com/webgpu-native/webgpu-headers.git#12c1d34e7464cac58cc41a24aeee1d48a2f21b74",
-            .hash = "N-V-__8AAB6zCwBR0I5-Aae8davBDtgznN3ZSUPm8rCH-Aii",
+            .url = "git+https://github.com/webgpu-native/webgpu-headers.git#a55c3c6d03a13efd2245f7a66440b73f1a0d8844",
+            .hash = "N-V-__8AANu4CwDRftIps-_T4IdAidab1id-938G6hwhp0u0",
         },
     },
 }
