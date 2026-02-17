@@ -51,7 +51,6 @@ pub const Enum = struct {
     const Entry = struct {
         doc: []const u8 = "",
         name: []const u8,
-        value: ?[]const u8 = null,
     };
 };
 

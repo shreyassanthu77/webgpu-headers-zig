@@ -51,9 +51,6 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
                 continue;
             };
             log.info("    {s}", .{entry.name});
-            if (entry.value) |value| {
-                log.info("        {s}", .{value});
-            }
         }
     }
 
@@ -114,14 +111,82 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
 
     for (schema.constants) |constant| {
         try writer.writeAll("pub const ");
-        try writeCase(writer, constant.name, .snake);
+        try writeIdent(writer, constant.name, .snake);
         try writer.writeAll(" = ");
         try writer.writeAll(constant.value);
         try writer.writeAll(";\n");
     }
+    try writer.writeAll("\n");
+
+    for (schema.bitflags) |bitflag| {
+        try writer.writeAll("pub const ");
+        try writeIdent(writer, bitflag.name, .pascal);
+        try writer.writeAll(" = packed struct(u32) {\n");
+
+        var count: usize = 0;
+        // Skip the first entry, which is the "none" entry.
+        for (bitflag.entries[1..]) |entry| {
+            if (entry.value_combination != null) {
+                continue;
+            }
+
+            try writer.writeAll("    ");
+            try writeIdent(writer, entry.name, .snake);
+            try writer.writeAll(": bool = false,\n");
+            count += 1;
+        }
+
+        const remaining = 32 - count;
+        if (remaining > 0) {
+            try writer.print("    _: u{d} = 0,\n\n", .{remaining});
+        }
+
+        try writer.writeAll("    pub const none = .{};\n");
+        for (bitflag.entries) |entry| {
+            const combos = entry.value_combination orelse continue;
+            try writer.writeAll("    pub const ");
+            try writeIdent(writer, entry.name, .snake);
+            try writer.writeAll(" = .{\n");
+            for (combos) |combo| {
+                try writer.writeAll("        .");
+                try writeIdent(writer, combo, .snake);
+                try writer.writeAll(" = true,\n");
+            }
+            try writer.writeAll("    };\n");
+        }
+
+        try writer.writeAll("};\n\n");
+    }
+
+    for (schema.enums) |en| {
+        var value: u32 = 0;
+        try writer.writeAll("pub const ");
+        try writeIdent(writer, en.name, .pascal);
+        try writer.writeAll(" = enum(u32) {\n");
+        for (en.entries) |entry| {
+            defer value += 1;
+            const e = entry orelse continue;
+            try writer.writeAll("    ");
+            try writeIdent(writer, e.name, .snake);
+            try writer.writeAll(",\n");
+        }
+        try writer.writeAll("    _,\n");
+
+        try writer.writeAll("};\n\n");
+    }
 }
 
 const Case = enum { camel, pascal, snake };
+fn writeIdent(writer: *std.Io.Writer, str: []const u8, comptime case: Case) !void {
+    const validIdentStart = std.ascii.isAlphabetic(str[0]) or str[0] == '_';
+    if (!validIdentStart) {
+        try writer.writeAll("@\"");
+    }
+    try writeCase(writer, str, case);
+    if (!validIdentStart) {
+        try writer.writeAll("\"");
+    }
+}
 fn writeCase(writer: *std.Io.Writer, str: []const u8, comptime case: Case) !void {
     if (case == .snake) {
         try writer.writeAll(str);
