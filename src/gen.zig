@@ -174,6 +174,21 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
 
         try writer.writeAll("};\n\n");
     }
+
+    for (schema.objects) |obj| {
+        std.debug.assert(!obj.is_struct);
+
+        try writer.writeAll("pub const ");
+        try writeIdent(writer, obj.name, .pascal);
+        try writer.writeAll(" = opaque* {\n");
+        try writer.writeAll("    extern fn wgpu");
+        try writeIdent(writer, obj.name, .pascal);
+        try writer.writeAll("Release(self: @This()) callconv(.c) void;\n");
+        try writer.writeAll("    pub const release = wgpu");
+        try writeIdent(writer, obj.name, .pascal);
+        try writer.writeAll("Release;\n");
+        try writer.writeAll("};\n\n");
+    }
 }
 
 const Case = enum { camel, pascal, snake };
