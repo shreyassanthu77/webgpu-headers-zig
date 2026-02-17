@@ -178,8 +178,11 @@ fn juicyMain(init: std.process.Init) !void {
     try out_writer.interface.flush();
 }
 
-pub const main = switch (builtin.zig_version.minor) {
-    0...14 => @compileError("At least Zig 0.15 is required"),
-    15 => lessJuicyMain,
-    else => juicyMain,
+pub const main = switch (builtin.zig_version.major) {
+    0 => switch (builtin.zig_version.minor) {
+        0...14 => @compileError("At least Zig 0.15 is required"),
+        15 => lessJuicyMain,
+        else => juicyMain,
+    },
+    else => @compileError("lol"),
 };
