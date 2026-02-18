@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) !void {
     run_gen.addFileArg(webgpu_headers_json);
     const output_file = run_gen.addOutputFileArg("bindings.zig");
     b.getInstallStep().dependOn(&run_gen.step);
-    _ = b.addModule("webgpu", .{
+    const webgpu_module = b.addModule("webgpu", .{
         .target = target,
         .optimize = optimize,
         .root_source_file = output_file,
@@ -39,4 +39,17 @@ pub fn build(b: *std.Build) !void {
     });
     const run_test_prelude = b.addRunArtifact(test_prelude);
     test_step.dependOn(&run_test_prelude.step);
+
+    const test_api_abi_parity = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/api_abi_parity_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+        .emit_object = true,
+    });
+    test_api_abi_parity.root_module.addImport("bindings", webgpu_module);
+    test_api_abi_parity.root_module.addIncludePath(webgpu_headers_dep.path("."));
+    test_step.dependOn(&test_api_abi_parity.step);
 }

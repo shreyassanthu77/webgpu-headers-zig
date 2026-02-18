@@ -10,101 +10,6 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
     defer schema_parsed.deinit();
     const schema = schema_parsed.value;
 
-    log.info("schema.copyright = {s}", .{schema.copyright});
-    log.info("schema.name = {s}", .{schema.name});
-
-    for (schema.bitflags) |bitflag| {
-        log.info("bitflag {s}", .{bitflag.name});
-        for (bitflag.entries) |entry| {
-            log.info("    {s}", .{entry.name});
-            if (entry.value_combination) |value_combination| {
-                for (value_combination) |value| {
-                    log.info("        - {s}", .{value});
-                }
-            }
-        }
-    }
-
-    for (schema.callbacks) |callback| {
-        log.info("callback {s} - {t}", .{ callback.name, callback.style });
-        for (callback.args) |arg| {
-            log.info("    {s}: {s}{s} pointer: {t} owned: {} def: {}", .{
-                arg.name,
-                if (arg.optional) "?" else "",
-                arg.type,
-                arg.pointer,
-                arg.passed_with_ownership orelse false,
-                arg.default,
-            });
-        }
-    }
-
-    for (schema.constants) |constant| {
-        log.info("const {s} = {s}", .{ constant.name, constant.value });
-    }
-
-    for (schema.enums) |en| {
-        log.info("enum {s}", .{en.name});
-        for (en.entries) |maybe_entry| {
-            const entry = maybe_entry orelse {
-                log.info("    _", .{});
-                continue;
-            };
-            log.info("    {s}", .{entry.name});
-        }
-    }
-
-    for (schema.functions) |func| {
-        log.info("fn {s}", .{func.name});
-        if (func.returns) |ret| {
-            log.info("    returns {s}", .{ret.type});
-        }
-        for (func.args) |arg| {
-            log.info("    {s}: {s}{s} pointer: {t} owned: {} def: {}", .{
-                arg.name,
-                if (arg.optional) "?" else "",
-                arg.type,
-                arg.pointer,
-                arg.passed_with_ownership orelse false,
-                arg.default,
-            });
-        }
-    }
-
-    for (schema.objects) |obj| {
-        log.info("obj {s}", .{obj.name});
-        for (obj.methods) |method| {
-            log.info("    fn {s}", .{method.name});
-            if (method.returns) |ret| {
-                log.info("        returns {s}", .{ret.type});
-            }
-            for (method.args) |arg| {
-                log.info("        {s}: {s}{s} pointer: {t} owned: {} def: {}", .{
-                    arg.name,
-                    if (arg.optional) "?" else "",
-                    arg.type,
-                    arg.pointer,
-                    arg.passed_with_ownership orelse false,
-                    arg.default,
-                });
-            }
-        }
-    }
-
-    for (schema.structs) |str| {
-        log.info("struct {s}", .{str.name});
-        for (str.members) |member| {
-            log.info("    {s}: {s}{s} pointer: {t} owned: {} def: {}", .{
-                member.name,
-                if (member.optional) "?" else "",
-                member.type,
-                member.pointer,
-                member.passed_with_ownership orelse false,
-                member.default,
-            });
-        }
-    }
-
     const prelude = @embedFile("./prelude.zig");
     try writer.writeAll(prelude);
     try writer.writeAll("\n");
@@ -122,7 +27,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writeDocString(writer, bitflag.doc, 0);
         try writer.writeAll("pub const ");
         try writeIdent(writer, bitflag.name, .pascal);
-        try writer.writeAll(" = packed struct(u32) {\n");
+        try writer.writeAll(" = packed struct(u64) {\n");
 
         var count: usize = 0;
         // Skip the first entry, which is the "none" entry.
@@ -138,18 +43,18 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             count += 1;
         }
 
-        const remaining = 32 - count;
+        const remaining = 64 - count;
         if (remaining > 0) {
             try writer.print("    _: u{d} = 0,\n\n", .{remaining});
         }
 
-        try writer.writeAll("    pub const none = .{};\n");
+        try writer.writeAll("    pub const none: @This() = .{};\n");
         for (bitflag.entries) |entry| {
             const combos = entry.value_combination orelse continue;
             try writeDocString(writer, entry.doc, 1);
             try writer.writeAll("    pub const ");
             try writeIdent(writer, entry.name, .snake);
-            try writer.writeAll(" = .{\n");
+            try writer.writeAll(": @This() = .{\n");
             for (combos) |combo| {
                 try writer.writeAll("        .");
                 try writeIdent(writer, combo, .snake);
@@ -540,13 +445,84 @@ fn writeDocString(writer: *std.Io.Writer, str: []const u8, indent: usize) !void 
 }
 
 const Case = enum { camel, pascal, snake };
+
+fn isZigKeyword(str: []const u8) bool {
+    const keywords = [_][]const u8{
+        "addrspace",
+        "align",
+        "allowzero",
+        "and",
+        "anyframe",
+        "anytype",
+        "asm",
+        "async",
+        "await",
+        "break",
+        "callconv",
+        "catch",
+        "comptime",
+        "const",
+        "continue",
+        "defer",
+        "else",
+        "enum",
+        "errdefer",
+        "error",
+        "export",
+        "extern",
+        "false",
+        "fn",
+        "for",
+        "if",
+        "inline",
+        "linksection",
+        "noalias",
+        "noinline",
+        "nosuspend",
+        "opaque",
+        "or",
+        "orelse",
+        "packed",
+        "pub",
+        "resume",
+        "return",
+        "struct",
+        "suspend",
+        "switch",
+        "test",
+        "threadlocal",
+        "true",
+        "try",
+        "union",
+        "unreachable",
+        "usingnamespace",
+        "var",
+        "volatile",
+        "while",
+    };
+
+    for (keywords) |keyword| {
+        if (std.mem.eql(u8, str, keyword)) return true;
+    }
+    return false;
+}
+
+fn isValidIdent(str: []const u8) bool {
+    if (str.len == 0) return false;
+    if (!(std.ascii.isAlphabetic(str[0]) or str[0] == '_')) return false;
+    for (str[1..]) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
+    }
+    return true;
+}
+
 fn writeIdent(writer: *std.Io.Writer, str: []const u8, comptime case: Case) !void {
-    const validIdentStart = std.ascii.isAlphabetic(str[0]) or str[0] == '_';
-    if (!validIdentStart) {
+    const escaped = !isValidIdent(str) or isZigKeyword(str);
+    if (escaped) {
         try writer.writeAll("@\"");
     }
     try writeCase(writer, str, case);
-    if (!validIdentStart) {
+    if (escaped) {
         try writer.writeAll("\"");
     }
 }
@@ -590,12 +566,12 @@ fn writeMemberType(writer: *std.Io.Writer, member: Schema.Parameter) !void {
         if (is_optional) {
             try writer.writeAll("?");
         }
-        // c_void pointers are raw data buffers → multi-pointer [*]
-        // everything else is a single-item pointer → *
+        // `anyopaque` cannot be used with many pointers (`[*]anyopaque`), so c_void
+        // pointers are represented as single-item opaque pointers.
         const is_raw = std.mem.eql(u8, type_str, "c_void");
         switch (pointer) {
-            .immutable => try writer.writeAll(if (is_raw) "[*]const " else "*const "),
-            .mutable => try writer.writeAll(if (is_raw) "[*]" else "*"),
+            .immutable => try writer.writeAll(if (is_raw) "*const " else "*const "),
+            .mutable => try writer.writeAll(if (is_raw) "*" else "*"),
             .none => unreachable,
         }
     } else if (is_optional) {
@@ -708,6 +684,19 @@ fn writeMemberDefault(writer: *std.Io.Writer, member: Schema.Parameter) !bool {
                 const name = s["constant.".len..];
                 try writer.writeAll(" = ");
                 try writeIdent(writer, name, .snake);
+            } else if (std.mem.startsWith(u8, type_str, "bitflag.")) {
+                if (std.mem.eql(u8, s, "none")) {
+                    try writer.writeAll(" = .{}");
+                } else if (std.mem.eql(u8, s, "all")) {
+                    const bitflag_name = type_str["bitflag.".len..];
+                    try writer.writeAll(" = ");
+                    try writeIdent(writer, bitflag_name, .pascal);
+                    try writer.writeAll(".all");
+                } else {
+                    try writer.writeAll(" = .{ .");
+                    try writeIdent(writer, s, .snake);
+                    try writer.writeAll(" = true }");
+                }
             } else if (std.mem.eql(u8, s, "zero")) {
                 // zero-init the struct
                 try writer.writeAll(" = .{}");
@@ -812,12 +801,6 @@ fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void 
         return;
     }
 
-    // Struct types default to .{}
-    if (std.mem.startsWith(u8, type_str, "struct.")) {
-        try writer.writeAll(" = .{}");
-        return;
-    }
-
     // Callback info types default to .{}
     if (std.mem.startsWith(u8, type_str, "callback.")) {
         try writer.writeAll(" = .{}");
@@ -838,12 +821,12 @@ fn writeArgType(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
         if (arg.optional) {
             try writer.writeAll("?");
         }
-        // c_void pointers are raw data buffers → multi-pointer [*]
-        // everything else is a single-item pointer → *
+        // `anyopaque` cannot be used with many pointers (`[*]anyopaque`), so c_void
+        // pointers are represented as single-item opaque pointers.
         const is_raw = std.mem.eql(u8, type_str, "c_void");
         switch (arg.pointer) {
-            .immutable => try writer.writeAll(if (is_raw) "[*]const " else "*const "),
-            .mutable => try writer.writeAll(if (is_raw) "[*]" else "*"),
+            .immutable => try writer.writeAll(if (is_raw) "*const " else "*const "),
+            .mutable => try writer.writeAll(if (is_raw) "*" else "*"),
             .none => unreachable,
         }
         try writeTypeInner(writer, type_str, false);
@@ -868,9 +851,10 @@ fn writeReturnType(writer: *std.Io.Writer, ret: Schema.Parameter) !void {
         if (ret.optional) {
             try writer.writeAll("?");
         }
+        const is_raw = std.mem.eql(u8, type_str, "c_void");
         switch (ret.pointer) {
-            .immutable => try writer.writeAll("[*]const "),
-            .mutable => try writer.writeAll("[*]"),
+            .immutable => try writer.writeAll(if (is_raw) "*const " else "[*]const "),
+            .mutable => try writer.writeAll(if (is_raw) "*" else "[*]"),
             .none => unreachable,
         }
         try writeTypeInner(writer, type_str, false);
