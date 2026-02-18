@@ -69,13 +69,11 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
     for (schema.enums) |en| {
         if (std.mem.eql(u8, en.name, "optional_bool")) continue;
 
-        var value: u32 = 0;
         try writeDocString(writer, en.doc, 0);
         try writer.writeAll("pub const ");
         try writeIdent(writer, en.name, .pascal);
         try writer.writeAll(" = enum(u32) {\n");
         for (en.entries) |entry| {
-            defer value += 1;
             const e = entry orelse continue;
             try writeDocString(writer, e.doc, 1);
             try writer.writeAll("    ");
@@ -155,60 +153,24 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             try writeIdent(writer, obj.name, .pascal);
             try writeIdent(writer, method.name, .pascal);
             try writer.writeAll("(self: @This()");
-            for (method.args) |arg| {
-                try writer.writeAll(", ");
-                try writeExternParameter(writer, arg);
-            }
-            if (method.callback) |cb| {
-                try writer.writeAll(", callback_info: ");
-                const cb_name = cb["callback.".len..];
-                try writeIdent(writer, cb_name, .pascal);
-                try writer.writeAll("CallbackInfo");
-            }
+            try writeParameterList(writer, method.args, method.callback, .extern_decl, true);
             try writer.writeAll(") callconv(.c) ");
-            if (method.returns) |ret| {
-                try writeReturnType(writer, ret);
-            } else if (method.callback != null) {
-                try writer.writeAll("Future");
-            } else {
-                try writer.writeAll("void");
-            }
+            try writeCallableReturn(writer, method.returns, method.callback != null);
             try writer.writeAll(";\n");
 
             // wrapper pub fn
             try writer.writeAll("    pub fn ");
             try writeIdent(writer, method.name, .camel);
             try writer.writeAll("(self: @This()");
-            for (method.args) |arg| {
-                try writer.writeAll(", ");
-                try writeWrapperParameter(writer, arg);
-            }
-            if (method.callback) |cb| {
-                try writer.writeAll(", callback_info: ");
-                const cb_name = cb["callback.".len..];
-                try writeIdent(writer, cb_name, .pascal);
-                try writer.writeAll("CallbackInfo");
-            }
+            try writeParameterList(writer, method.args, method.callback, .wrapper_decl, true);
             try writer.writeAll(") ");
-            if (method.returns) |ret| {
-                try writeReturnType(writer, ret);
-            } else if (method.callback != null) {
-                try writer.writeAll("Future");
-            } else {
-                try writer.writeAll("void");
-            }
+            try writeCallableReturn(writer, method.returns, method.callback != null);
             try writer.writeAll(" {\n");
             try writer.writeAll("        return wgpu");
             try writeIdent(writer, obj.name, .pascal);
             try writeIdent(writer, method.name, .pascal);
             try writer.writeAll("(self");
-            for (method.args) |arg| {
-                try writer.writeAll(", ");
-                try writeForwardedArgument(writer, arg);
-            }
-            if (method.callback != null) {
-                try writer.writeAll(", callback_info");
-            }
+            try writeParameterList(writer, method.args, method.callback, .call, true);
             try writer.writeAll(");\n");
             try writer.writeAll("    }\n");
         }
@@ -240,10 +202,8 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         }
 
         for (str.members) |member| {
-            const type_str = member.type;
-            if (std.mem.startsWith(u8, type_str, "array<")) {
+            if (arrayInnerType(member.type)) |inner| {
                 // array<T> becomes two fields: count (usize) + pointer (?[*]const T)
-                const inner = type_str["array<".len .. type_str.len - 1];
 
                 // Count field: {name}_count or special naming
                 try writer.writeAll("    ");
@@ -263,9 +223,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
                 try writeIdent(writer, member.name, .snake);
                 try writer.writeAll(": ");
                 try writeMemberType(writer, member);
-                if (try writeMemberDefault(writer, member)) {
-                    // default was written
-                } else {
+                if (!(try writeMemberDefault(writer, member))) {
                     // No explicit default: zero-init enums/structs/objects as appropriate
                     try writeImplicitDefault(writer, member);
                 }
@@ -294,74 +252,23 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("extern fn wgpu");
         try writeIdent(writer, func.name, .pascal);
         try writer.writeAll("(");
-        {
-            var first = true;
-            for (func.args) |arg| {
-                if (!first) try writer.writeAll(", ");
-                first = false;
-                try writeExternParameter(writer, arg);
-            }
-            if (func.callback) |cb| {
-                if (!first) try writer.writeAll(", ");
-                try writer.writeAll("callback_info: ");
-                const cb_name = cb["callback.".len..];
-                try writeIdent(writer, cb_name, .pascal);
-                try writer.writeAll("CallbackInfo");
-            }
-        }
+        try writeParameterList(writer, func.args, func.callback, .extern_decl, false);
         try writer.writeAll(") callconv(.c) ");
-        if (func.returns) |ret| {
-            try writeReturnType(writer, ret);
-        } else if (func.callback != null) {
-            try writer.writeAll("Future");
-        } else {
-            try writer.writeAll("void");
-        }
+        try writeCallableReturn(writer, func.returns, func.callback != null);
         try writer.writeAll(";\n");
 
         // wrapper pub fn
         try writer.writeAll("pub fn ");
         try writeIdent(writer, func.name, .camel);
         try writer.writeAll("(");
-        {
-            var first = true;
-            for (func.args) |arg| {
-                if (!first) try writer.writeAll(", ");
-                first = false;
-                try writeWrapperParameter(writer, arg);
-            }
-            if (func.callback) |cb| {
-                if (!first) try writer.writeAll(", ");
-                try writer.writeAll("callback_info: ");
-                const cb_name = cb["callback.".len..];
-                try writeIdent(writer, cb_name, .pascal);
-                try writer.writeAll("CallbackInfo");
-            }
-        }
+        try writeParameterList(writer, func.args, func.callback, .wrapper_decl, false);
         try writer.writeAll(") ");
-        if (func.returns) |ret| {
-            try writeReturnType(writer, ret);
-        } else if (func.callback != null) {
-            try writer.writeAll("Future");
-        } else {
-            try writer.writeAll("void");
-        }
+        try writeCallableReturn(writer, func.returns, func.callback != null);
         try writer.writeAll(" {\n");
         try writer.writeAll("    return wgpu");
         try writeIdent(writer, func.name, .pascal);
         try writer.writeAll("(");
-        {
-            var first = true;
-            for (func.args) |arg| {
-                if (!first) try writer.writeAll(", ");
-                first = false;
-                try writeForwardedArgument(writer, arg);
-            }
-            if (func.callback != null) {
-                if (!first) try writer.writeAll(", ");
-                try writer.writeAll("callback_info");
-            }
-        }
+        try writeParameterList(writer, func.args, func.callback, .call, false);
         try writer.writeAll(");\n");
         try writer.writeAll("}\n\n");
     }
@@ -435,50 +342,6 @@ const zig_keywords = std.StaticStringMap(void).initComptime(.{
     .{"while"},
 });
 
-const direct_type_mappings = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "uint32", "u32" },
-    .{ "uint64", "u64" },
-    .{ "int32", "i32" },
-    .{ "uint16", "u16" },
-    .{ "float32", "f32" },
-    .{ "nullable_float32", "f32" },
-    .{ "float64_supertype", "f64" },
-    .{ "usize", "usize" },
-    .{ "bool", "Bool" },
-    .{ "enum.bool", "Bool" },
-    .{ "optional_bool", "Bool.Optional" },
-    .{ "enum.optional_bool", "Bool.Optional" },
-    .{ "string_with_default_empty", "String" },
-    .{ "out_string", "String" },
-    .{ "nullable_string", "String" },
-    .{ "c_void", "anyopaque" },
-});
-
-const string_types = std.StaticStringMap(void).initComptime(.{
-    .{"string_with_default_empty"},
-    .{"out_string"},
-    .{"nullable_string"},
-});
-
-const optional_bool_types = std.StaticStringMap(void).initComptime(.{
-    .{"optional_bool"},
-    .{"enum.optional_bool"},
-});
-
-const zero_int_default_types = std.StaticStringMap(void).initComptime(.{
-    .{"uint32"},
-    .{"uint64"},
-    .{"int32"},
-    .{"uint16"},
-    .{"usize"},
-});
-
-const zero_float_default_types = std.StaticStringMap(void).initComptime(.{
-    .{"float32"},
-    .{"nullable_float32"},
-    .{"float64_supertype"},
-});
-
 fn isZigKeyword(str: []const u8) bool {
     return zig_keywords.has(str);
 }
@@ -520,16 +383,8 @@ fn writeCase(writer: *std.Io.Writer, str: []const u8, comptime case: Case) !void
 }
 
 fn writeMemberType(writer: *std.Io.Writer, member: Schema.Parameter) !void {
-    const type_str = member.type;
-
-    // Handle array types: array<T> becomes count + pointer pair
-    // But we handle these as two fields, so array types are split in the caller.
-    // Actually, looking at the C header, array<T> becomes count: usize + ptr: ?[*]const T
-    // But the JSON has these as single members. The C generator splits them.
-    // For Zig we need to handle this: the member type is the pointer part,
-    // and we need to emit the count field before it.
-
-    if (std.mem.startsWith(u8, type_str, "array<")) {
+    // Array types are split before calling this function.
+    if (arrayInnerType(member.type) != null) {
         // array types should be handled before calling writeMemberType
         unreachable;
     }
@@ -537,58 +392,67 @@ fn writeMemberType(writer: *std.Io.Writer, member: Schema.Parameter) !void {
     try writeParameterType(writer, member, .single, true);
 }
 
-fn writeTypeInner(writer: *std.Io.Writer, type_str: []const u8, optional: bool) !void {
-    if (direct_type_mappings.get(type_str)) |mapped| {
-        try writer.writeAll(mapped);
-    } else if (std.mem.startsWith(u8, type_str, "enum.")) {
-        const name = type_str["enum.".len..];
-        try writeIdent(writer, name, .pascal);
-    } else if (std.mem.startsWith(u8, type_str, "struct.")) {
-        const name = type_str["struct.".len..];
-        try writeIdent(writer, name, .pascal);
-    } else if (std.mem.startsWith(u8, type_str, "object.")) {
-        const name = type_str["object.".len..];
-        if (optional) {
-            try writer.writeAll("?");
-        }
-        try writeIdent(writer, name, .pascal);
-    } else if (std.mem.startsWith(u8, type_str, "bitflag.")) {
-        const name = type_str["bitflag.".len..];
-        try writeIdent(writer, name, .pascal);
-    } else if (std.mem.startsWith(u8, type_str, "callback.")) {
-        // Callback info struct types - these are passed by value in C
-        // The naming pattern is the callback name + "CallbackInfo"
-        const name = type_str["callback.".len..];
-        try writeIdent(writer, name, .pascal);
-        try writer.writeAll("CallbackInfo");
-    } else {
-        log.err("Unknown type: {s}", .{type_str});
-        try writer.writeAll("@\"UNKNOWN_");
-        try writer.writeAll(type_str);
-        try writer.writeAll("\"");
+fn writeTypeInner(writer: *std.Io.Writer, typ: Schema.Parameter.Type, optional: bool) !void {
+    switch (typ) {
+        .uint16 => try writer.writeAll("u16"),
+        .uint32 => try writer.writeAll("u32"),
+        .uint64 => try writer.writeAll("u64"),
+        .usize => try writer.writeAll("usize"),
+        .int16 => try writer.writeAll("i16"),
+        .int32 => try writer.writeAll("i32"),
+        .float32, .nullable_float32 => try writer.writeAll("f32"),
+        .float64, .float64_supertype => try writer.writeAll("f64"),
+
+        .bool => try writer.writeAll("Bool"),
+        .optional_bool => try writer.writeAll("Bool.Optional"),
+        .string_with_default_empty, .out_string, .nullable_string => try writer.writeAll("String"),
+        .c_void => try writer.writeAll("anyopaque"),
+
+        .typedef => |name| try writeIdent(writer, name, .pascal),
+        .@"enum" => |name| try writeIdent(writer, name, .pascal),
+        .@"struct" => |name| try writeIdent(writer, name, .pascal),
+        .bitflag => |name| try writeIdent(writer, name, .pascal),
+        .object => |name| {
+            if (optional) {
+                try writer.writeAll("?");
+            }
+            try writeIdent(writer, name, .pascal);
+        },
+        .callback => |name| {
+            try writeIdent(writer, name, .pascal);
+            try writer.writeAll("CallbackInfo");
+        },
+        .function_type => |name| {
+            try writeIdent(writer, name, .pascal);
+            try writer.writeAll("Callback");
+        },
+
+        .array => unreachable,
+        .array_bool => try writer.writeAll("bool"),
+        .array_string => try writer.writeAll("String"),
+        .array_uint16 => try writer.writeAll("u16"),
+        .array_uint32 => try writer.writeAll("u32"),
+        .array_uint64 => try writer.writeAll("u64"),
+        .array_usize => try writer.writeAll("usize"),
+        .array_int16 => try writer.writeAll("i16"),
+        .array_int32 => try writer.writeAll("i32"),
+        .array_float32 => try writer.writeAll("f32"),
+        .array_float64 => try writer.writeAll("f64"),
     }
 }
 
 fn writeMemberDefault(writer: *std.Io.Writer, member: Schema.Parameter) !bool {
     const default = member.default;
-    const type_str = member.type;
+    const typ = member.type;
 
     switch (default) {
         .null => return false, // no explicit default
         .bool => |b| {
-            // bool defaults: false/true → .false/.true (for Bool type)
-            if (std.mem.eql(u8, type_str, "bool")) {
-                if (b) {
-                    try writer.writeAll(" = .true");
-                } else {
-                    try writer.writeAll(" = .false");
-                }
-            } else {
-                if (b) {
-                    try writer.writeAll(" = true");
-                } else {
-                    try writer.writeAll(" = false");
-                }
+            const bool_default = if (b) " = true" else " = false";
+            const wgpu_bool_default = if (b) " = .true" else " = .false";
+            switch (typ) {
+                .bool => try writer.writeAll(wgpu_bool_default),
+                else => try writer.writeAll(bool_default),
             }
             return true;
         },
@@ -606,29 +470,28 @@ fn writeMemberDefault(writer: *std.Io.Writer, member: Schema.Parameter) !bool {
                 const name = s["constant.".len..];
                 try writer.writeAll(" = ");
                 try writeIdent(writer, name, .snake);
-            } else if (std.mem.startsWith(u8, type_str, "bitflag.")) {
-                if (std.mem.eql(u8, s, "none")) {
-                    try writer.writeAll(" = .{}");
-                } else if (std.mem.eql(u8, s, "all")) {
-                    const bitflag_name = type_str["bitflag.".len..];
-                    try writer.writeAll(" = ");
-                    try writeIdent(writer, bitflag_name, .pascal);
-                    try writer.writeAll(".all");
-                } else {
-                    try writer.writeAll(" = .{ .");
-                    try writeIdent(writer, s, .snake);
-                    try writer.writeAll(" = true }");
+            } else if (typ == .bitflag) {
+                switch (typ) {
+                    .bitflag => |bitflag_name| {
+                        if (std.mem.eql(u8, s, "none")) {
+                            try writer.writeAll(" = .{}");
+                        } else if (std.mem.eql(u8, s, "all")) {
+                            try writer.writeAll(" = ");
+                            try writeIdent(writer, bitflag_name, .pascal);
+                            try writer.writeAll(".all");
+                        } else {
+                            try writer.writeAll(" = .{ .");
+                            try writeIdent(writer, s, .snake);
+                            try writer.writeAll(" = true }");
+                        }
+                    },
+                    else => unreachable,
                 }
             } else if (std.mem.eql(u8, s, "zero")) {
                 // zero-init the struct
                 try writer.writeAll(" = .{}");
             } else if (std.mem.eql(u8, s, "none")) {
-                // For bitflags, none = .{}; for enums it's different
-                if (std.mem.startsWith(u8, type_str, "bitflag.")) {
-                    try writer.writeAll(" = .{}");
-                } else {
-                    try writer.writeAll(" = .none");
-                }
+                try writer.writeAll(" = .none");
             } else if (std.mem.startsWith(u8, s, "0x")) {
                 // Hex literal like "0xFFFFFFFF"
                 try writer.writeAll(" = ");
@@ -645,7 +508,7 @@ fn writeMemberDefault(writer: *std.Io.Writer, member: Schema.Parameter) !bool {
 }
 
 fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void {
-    const type_str = member.type;
+    const typ = member.type;
 
     // Pointer types (including optional pointers) — must check before type-specific defaults
     if (member.pointer != .none) {
@@ -657,74 +520,62 @@ fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void 
 
     // Optional non-pointer types
     if (member.optional) {
-        // Optional objects are already nullable pointers
-        if (std.mem.startsWith(u8, type_str, "object.")) {
-            try writer.writeAll(" = null");
-            return;
-        }
         try writer.writeAll(" = null");
         return;
     }
 
-    // String types default to String.NULL
-    if (isStringType(type_str)) {
-        try writer.writeAll(" = String.NULL");
-        return;
-    }
-
-    // Non-optional object types: no default (they're required fields)
-    if (std.mem.startsWith(u8, type_str, "object.")) {
-        return;
-    }
-
-    // Numeric types default to 0
-    if (zero_int_default_types.has(type_str)) {
-        try writer.writeAll(" = 0");
-        return;
-    }
-    if (zero_float_default_types.has(type_str)) {
-        try writer.writeAll(" = 0.0");
-        return;
-    }
-
-    // Bool type defaults to .false
-    if (std.mem.eql(u8, type_str, "bool")) {
-        try writer.writeAll(" = .false");
-        return;
-    }
-
-    // optional_bool defaults to .undefined
-    if (optional_bool_types.has(type_str)) {
-        try writer.writeAll(" = .undefined");
-        return;
-    }
-
-    // Enum types default to the zero value (first variant or undefined)
-    if (std.mem.startsWith(u8, type_str, "enum.")) {
-        try writer.writeAll(" = @enumFromInt(0)");
-        return;
-    }
-
-    // Bitflag types default to none (.{})
-    if (std.mem.startsWith(u8, type_str, "bitflag.")) {
-        try writer.writeAll(" = .{}");
-        return;
-    }
-
-    // Callback info types default to .{}
-    if (std.mem.startsWith(u8, type_str, "callback.")) {
-        try writer.writeAll(" = .{}");
-        return;
+    switch (typ) {
+        .string_with_default_empty, .out_string, .nullable_string => {
+            try writer.writeAll(" = String.NULL");
+            return;
+        },
+        .object => {
+            // Non-optional object types: no default (required fields).
+            return;
+        },
+        .uint16, .uint32, .uint64, .usize, .int16, .int32 => {
+            try writer.writeAll(" = 0");
+            return;
+        },
+        .float32, .nullable_float32, .float64, .float64_supertype => {
+            try writer.writeAll(" = 0.0");
+            return;
+        },
+        .bool => {
+            try writer.writeAll(" = .false");
+            return;
+        },
+        .optional_bool => {
+            try writer.writeAll(" = .undefined");
+            return;
+        },
+        .@"enum" => {
+            try writer.writeAll(" = @enumFromInt(0)");
+            return;
+        },
+        .bitflag, .callback => {
+            try writer.writeAll(" = .{}");
+            return;
+        },
+        else => return,
     }
 }
 
-fn isStringType(type_str: []const u8) bool {
-    return string_types.has(type_str);
-}
-
-fn arrayInnerType(type_str: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, type_str, "array<")) return null;
-    return type_str["array<".len .. type_str.len - 1];
+fn arrayInnerType(typ: Schema.Parameter.Type) ?Schema.Parameter.Type {
+    return switch (typ) {
+        .array => |child| child.*,
+        .array_bool => .bool,
+        .array_string => .string_with_default_empty,
+        .array_uint16 => .uint16,
+        .array_uint32 => .uint32,
+        .array_uint64 => .uint64,
+        .array_usize => .usize,
+        .array_int16 => .int16,
+        .array_int32 => .int32,
+        .array_float32 => .float32,
+        .array_float64 => .float64,
+        else => null,
+    };
 }
 
 const PointerWidth = enum {
@@ -735,12 +586,15 @@ const PointerWidth = enum {
 fn writePointerPrefix(
     writer: *std.Io.Writer,
     pointer: Schema.Parameter.Pointer,
-    type_str: []const u8,
+    typ: Schema.Parameter.Type,
     comptime width: PointerWidth,
 ) !void {
     // `anyopaque` cannot be used with many pointers (`[*]anyopaque`), so c_void
     // pointers are represented as single-item opaque pointers.
-    const is_raw = std.mem.eql(u8, type_str, "c_void");
+    const is_raw = switch (typ) {
+        .c_void => true,
+        else => false,
+    };
     switch (pointer) {
         .immutable => {
             if (is_raw or width == .single) {
@@ -766,22 +620,25 @@ fn writeParameterType(
     comptime pointer_width: PointerWidth,
     comptime forward_optional_to_inner: bool,
 ) !void {
-    const type_str = param.type;
+    const typ = param.type;
 
     if (param.pointer != .none) {
         if (param.optional) {
             try writer.writeAll("?");
         }
-        try writePointerPrefix(writer, param.pointer, type_str, pointer_width);
-        try writeTypeInner(writer, type_str, false);
+        try writePointerPrefix(writer, param.pointer, typ, pointer_width);
+        try writeTypeInner(writer, typ, false);
         return;
     }
 
-    if (param.optional and !std.mem.startsWith(u8, type_str, "object.")) {
-        try writer.writeAll("?");
+    if (param.optional) {
+        switch (typ) {
+            .object => {},
+            else => try writer.writeAll("?"),
+        }
     }
 
-    try writeTypeInner(writer, type_str, if (forward_optional_to_inner) param.optional else false);
+    try writeTypeInner(writer, typ, if (forward_optional_to_inner) param.optional else false);
 }
 
 fn writeExternParameter(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
@@ -809,7 +666,7 @@ fn writeWrapperParameter(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
 
     try writeIdent(writer, arg.name, .snake);
     try writer.writeAll(": ");
-    if (isStringType(arg.type) and arg.pointer == .none) {
+    if (arg.pointer == .none and isStringParamType(arg.type)) {
         try writer.writeAll("[]const u8");
     } else {
         try writeArgType(writer, arg);
@@ -825,7 +682,7 @@ fn writeForwardedArgument(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
         return;
     }
 
-    if (isStringType(arg.type) and arg.pointer == .none) {
+    if (arg.pointer == .none and isStringParamType(arg.type)) {
         try writer.writeAll("String.from(");
         try writeIdent(writer, arg.name, .snake);
         try writer.writeAll(")");
@@ -841,6 +698,67 @@ fn writeArgType(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
 
 fn writeReturnType(writer: *std.Io.Writer, ret: Schema.Parameter) !void {
     try writeParameterType(writer, ret, .many, false);
+}
+
+const ParameterListKind = enum {
+    extern_decl,
+    wrapper_decl,
+    call,
+};
+
+fn isStringParamType(typ: Schema.Parameter.Type) bool {
+    return switch (typ) {
+        .string_with_default_empty, .out_string, .nullable_string => true,
+        else => false,
+    };
+}
+
+fn writeCallbackInfoTypeRef(writer: *std.Io.Writer, callback_ref: []const u8) !void {
+    const cb_name = callback_ref["callback.".len..];
+    try writeIdent(writer, cb_name, .pascal);
+    try writer.writeAll("CallbackInfo");
+}
+
+fn writeCallableReturn(writer: *std.Io.Writer, ret: ?Schema.Parameter, has_callback: bool) !void {
+    if (ret) |r| {
+        try writeReturnType(writer, r);
+    } else if (has_callback) {
+        try writer.writeAll("Future");
+    } else {
+        try writer.writeAll("void");
+    }
+}
+
+fn writeParameterList(
+    writer: *std.Io.Writer,
+    args: []const Schema.Parameter,
+    callback: ?[]const u8,
+    kind: ParameterListKind,
+    has_leading_param: bool,
+) !void {
+    var needs_comma = has_leading_param;
+
+    for (args) |arg| {
+        if (needs_comma) try writer.writeAll(", ");
+        needs_comma = true;
+
+        switch (kind) {
+            .extern_decl => try writeExternParameter(writer, arg),
+            .wrapper_decl => try writeWrapperParameter(writer, arg),
+            .call => try writeForwardedArgument(writer, arg),
+        }
+    }
+
+    if (callback) |cb| {
+        if (needs_comma) try writer.writeAll(", ");
+        switch (kind) {
+            .extern_decl, .wrapper_decl => {
+                try writer.writeAll("callback_info: ");
+                try writeCallbackInfoTypeRef(writer, cb);
+            },
+            .call => try writer.writeAll("callback_info"),
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
