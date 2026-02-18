@@ -159,7 +159,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             try writer.writeAll(";\n");
 
             // wrapper pub fn
-            try writer.writeAll("    pub fn ");
+            try writer.writeAll("    pub inline fn ");
             try writeIdent(writer, method.name, .camel);
             try writer.writeAll("(self: @This()");
             try writeParameterList(writer, method.args, method.callback, .wrapper_decl, true);
@@ -258,7 +258,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll(";\n");
 
         // wrapper pub fn
-        try writer.writeAll("pub fn ");
+        try writer.writeAll("pub inline fn ");
         try writeIdent(writer, func.name, .camel);
         try writer.writeAll("(");
         try writeParameterList(writer, func.args, func.callback, .wrapper_decl, false);
@@ -659,7 +659,11 @@ fn writeExternParameter(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
 fn writeWrapperParameter(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
     if (arrayInnerType(arg.type)) |inner| {
         try writeIdent(writer, arg.name, .snake);
-        try writer.writeAll(": []const ");
+        try writer.writeAll(": ");
+        if (arg.optional) {
+            try writer.writeAll("?");
+        }
+        try writer.writeAll("[]const ");
         try writeTypeInner(writer, inner, false);
         return;
     }
@@ -675,10 +679,18 @@ fn writeWrapperParameter(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
 
 fn writeForwardedArgument(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
     if (arrayInnerType(arg.type) != null) {
-        try writeIdent(writer, arg.name, .snake);
-        try writer.writeAll(".len, ");
-        try writeIdent(writer, arg.name, .snake);
-        try writer.writeAll(".ptr");
+        if (arg.optional) {
+            try writer.writeAll("if (");
+            try writeIdent(writer, arg.name, .snake);
+            try writer.writeAll(") |slice| slice.len else 0, if (");
+            try writeIdent(writer, arg.name, .snake);
+            try writer.writeAll(") |slice| slice.ptr else null");
+        } else {
+            try writeIdent(writer, arg.name, .snake);
+            try writer.writeAll(".len, ");
+            try writeIdent(writer, arg.name, .snake);
+            try writer.writeAll(".ptr");
+        }
         return;
     }
 
