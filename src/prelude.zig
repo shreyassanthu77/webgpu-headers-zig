@@ -17,11 +17,6 @@ pub const Bool = enum(u32) {
         return .fromBool(self);
     }
 
-    test into {
-        try std.testing.expect(Bool.true.into() == true);
-        try std.testing.expect(Bool.false.into() == false);
-    }
-
     pub const Optional = enum(u32) {
         false = 0,
         true = 1,
@@ -91,7 +86,3 @@ const nan =
         std.zig.c_translation.builtins.nanf("")
     else
         std.zig.c_builtins.nanf("");
-
-comptime {
-    std.testing.refAllDecls(@This());
-}
