@@ -92,9 +92,61 @@ fn expectTypeAbiCompatible(comptime name: []const u8, comptime Z: type, comptime
         .int => {
             // Size/alignment check above is enough for ABI check here.
         },
+        .float => {
+            // Size/alignment check above is enough for ABI check here.
+        },
+        .bool => {
+            // Size/alignment check above is enough for ABI check here.
+        },
+        .void => {
+            // Size/alignment check above is enough for ABI check here.
+        },
         else => {
             @compileError(std.fmt.comptimePrint("Unhandled type kind '{s}' for {s}", .{ @tagName(zi_tag), name }));
         },
+    }
+}
+
+fn expectFunctionAbiCompatible(comptime name: []const u8, comptime ZFn: type, comptime CFn: type) void {
+    const zf = switch (@typeInfo(ZFn)) {
+        .@"fn" => |f| f,
+        else => comptimeFail(name, "zig declaration is not a function"),
+    };
+    const cf = switch (@typeInfo(CFn)) {
+        .@"fn" => |f| f,
+        else => comptimeFail(name, "c declaration is not a function"),
+    };
+
+    if (zf.calling_convention != cf.calling_convention) comptimeFail(name, "function calling convention");
+    if (zf.is_var_args != cf.is_var_args) comptimeFail(name, "function var args");
+    if (zf.params.len != cf.params.len) comptimeFail(name, "function parameter count");
+
+    inline for (zf.params, 0..) |zp, i| {
+        const cp = cf.params[i];
+        const zpt = zp.type orelse comptimeFail(name, "zig function parameter type");
+        const cpt = cp.type orelse comptimeFail(name, "c function parameter type");
+        expectTypeAbiCompatible(std.fmt.comptimePrint("{s} param[{d}]", .{ name, i }), zpt, cpt);
+    }
+
+    const zrt = zf.return_type orelse void;
+    const crt = cf.return_type orelse void;
+    expectTypeAbiCompatible(std.fmt.comptimePrint("{s} return", .{name}), zrt, crt);
+}
+
+fn expectWgpuExternFunctionsCompatible(comptime namespace_name: []const u8, comptime Namespace: type) void {
+    const decls = std.meta.declarations(Namespace);
+    inline for (decls) |decl| {
+        if (!std.mem.startsWith(u8, decl.name, "wgpu")) continue;
+
+        if (!@hasDecl(c, decl.name)) {
+            const fn_name = std.fmt.comptimePrint("{s}.{s}", .{ namespace_name, decl.name });
+            comptimeFail(fn_name, "missing in c namespace");
+        }
+
+        const z_fn = @field(Namespace, decl.name);
+        const c_fn = @field(c, decl.name);
+        const fn_name = std.fmt.comptimePrint("{s}.{s}", .{ namespace_name, decl.name });
+        expectFunctionAbiCompatible(fn_name, @TypeOf(z_fn), @TypeOf(c_fn));
     }
 }
 
@@ -104,11 +156,27 @@ test "bindings types are API/ABI compatible with webgpu.h" {
     comptime {
         // Explicitly check Optional bool mapping, which is nested under Bool.
         expectTypeAbiCompatible("WGPUOptionalBool", wgpu.Bool.Optional, c.WGPUOptionalBool);
+        expectWgpuExternFunctionsCompatible("wgpu", wgpu);
 
         const decls = std.meta.declarations(wgpu);
         for (decls) |decl| {
             const value = @field(wgpu, decl.name);
-            if (@TypeOf(value) != type) continue;
+            if (@TypeOf(value) != type) {
+                continue;
+            }
+
+            switch (@typeInfo(value)) {
+                .pointer => |p| switch (@typeInfo(p.child)) {
+                    .@"opaque", .@"struct", .@"union", .@"enum" => {
+                        expectWgpuExternFunctionsCompatible(decl.name, p.child);
+                    },
+                    else => {},
+                },
+                .@"opaque", .@"struct", .@"union", .@"enum" => {
+                    expectWgpuExternFunctionsCompatible(decl.name, value);
+                },
+                else => {},
+            }
 
             const c_name_opt = cNameFor(decl.name);
             if (c_name_opt) |c_name| {
