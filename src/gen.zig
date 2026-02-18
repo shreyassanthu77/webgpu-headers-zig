@@ -282,13 +282,63 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             }
             try writer.writeAll(";\n");
 
-            // pub const alias
-            try writer.writeAll("    pub const ");
+            // wrapper pub fn
+            try writer.writeAll("    pub fn ");
             try writeIdent(writer, method.name, .camel);
-            try writer.writeAll(" = wgpu");
+            try writer.writeAll("(self: @This()");
+            for (method.args) |arg| {
+                try writer.writeAll(", ");
+                try writeIdent(writer, arg.name, .snake);
+                try writer.writeAll(": ");
+                if (std.mem.startsWith(u8, arg.type, "array<")) {
+                    const inner = arg.type["array<".len .. arg.type.len - 1];
+                    try writer.writeAll("[]const ");
+                    try writeTypeInner(writer, inner, false);
+                } else if (isStringType(arg.type) and arg.pointer == .none) {
+                    try writer.writeAll("[]const u8");
+                } else {
+                    try writeArgType(writer, arg);
+                }
+            }
+            if (method.callback) |cb| {
+                try writer.writeAll(", callback_info: ");
+                const cb_name = cb["callback.".len..];
+                try writeIdent(writer, cb_name, .pascal);
+                try writer.writeAll("CallbackInfo");
+            }
+            try writer.writeAll(") ");
+            if (method.returns) |ret| {
+                try writeReturnType(writer, ret);
+            } else if (method.callback != null) {
+                try writer.writeAll("Future");
+            } else {
+                try writer.writeAll("void");
+            }
+            try writer.writeAll(" {\n");
+            try writer.writeAll("        return wgpu");
             try writeIdent(writer, obj.name, .pascal);
             try writeIdent(writer, method.name, .pascal);
-            try writer.writeAll(";\n");
+            try writer.writeAll("(self");
+            for (method.args) |arg| {
+                try writer.writeAll(", ");
+                if (std.mem.startsWith(u8, arg.type, "array<")) {
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(".len, ");
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(".ptr");
+                } else if (isStringType(arg.type) and arg.pointer == .none) {
+                    try writer.writeAll("String.from(");
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(")");
+                } else {
+                    try writeIdent(writer, arg.name, .snake);
+                }
+            }
+            if (method.callback != null) {
+                try writer.writeAll(", callback_info");
+            }
+            try writer.writeAll(");\n");
+            try writer.writeAll("    }\n");
         }
 
         try writer.writeAll("};\n\n");
@@ -367,29 +417,113 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
     // Global functions
     for (schema.functions) |func| {
         try writeDocString(writer, func.doc, 0);
+
+        // extern fn declaration
         try writer.writeAll("extern fn wgpu");
         try writeIdent(writer, func.name, .pascal);
         try writer.writeAll("(");
-        var first = true;
-        for (func.args) |arg| {
-            if (!first) try writer.writeAll(", ");
-            first = false;
-            try writeIdent(writer, arg.name, .snake);
-            try writer.writeAll(": ");
-            try writeArgType(writer, arg);
+        {
+            var first = true;
+            for (func.args) |arg| {
+                if (!first) try writer.writeAll(", ");
+                first = false;
+                if (std.mem.startsWith(u8, arg.type, "array<")) {
+                    const inner = arg.type["array<".len .. arg.type.len - 1];
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll("_count: usize, ");
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(": ?[*]const ");
+                    try writeTypeInner(writer, inner, false);
+                } else {
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(": ");
+                    try writeArgType(writer, arg);
+                }
+            }
+            if (func.callback) |cb| {
+                if (!first) try writer.writeAll(", ");
+                try writer.writeAll("callback_info: ");
+                const cb_name = cb["callback.".len..];
+                try writeIdent(writer, cb_name, .pascal);
+                try writer.writeAll("CallbackInfo");
+            }
         }
         try writer.writeAll(") callconv(.c) ");
         if (func.returns) |ret| {
             try writeReturnType(writer, ret);
+        } else if (func.callback != null) {
+            try writer.writeAll("Future");
         } else {
             try writer.writeAll("void");
         }
         try writer.writeAll(";\n");
-        try writer.writeAll("pub const ");
+
+        // wrapper pub fn
+        try writer.writeAll("pub fn ");
         try writeIdent(writer, func.name, .camel);
-        try writer.writeAll(" = wgpu");
+        try writer.writeAll("(");
+        {
+            var first = true;
+            for (func.args) |arg| {
+                if (!first) try writer.writeAll(", ");
+                first = false;
+                try writeIdent(writer, arg.name, .snake);
+                try writer.writeAll(": ");
+                if (std.mem.startsWith(u8, arg.type, "array<")) {
+                    const inner = arg.type["array<".len .. arg.type.len - 1];
+                    try writer.writeAll("[]const ");
+                    try writeTypeInner(writer, inner, false);
+                } else if (isStringType(arg.type) and arg.pointer == .none) {
+                    try writer.writeAll("[]const u8");
+                } else {
+                    try writeArgType(writer, arg);
+                }
+            }
+            if (func.callback) |cb| {
+                if (!first) try writer.writeAll(", ");
+                try writer.writeAll("callback_info: ");
+                const cb_name = cb["callback.".len..];
+                try writeIdent(writer, cb_name, .pascal);
+                try writer.writeAll("CallbackInfo");
+            }
+        }
+        try writer.writeAll(") ");
+        if (func.returns) |ret| {
+            try writeReturnType(writer, ret);
+        } else if (func.callback != null) {
+            try writer.writeAll("Future");
+        } else {
+            try writer.writeAll("void");
+        }
+        try writer.writeAll(" {\n");
+        try writer.writeAll("    return wgpu");
         try writeIdent(writer, func.name, .pascal);
-        try writer.writeAll(";\n\n");
+        try writer.writeAll("(");
+        {
+            var first = true;
+            for (func.args) |arg| {
+                if (!first) try writer.writeAll(", ");
+                first = false;
+                if (std.mem.startsWith(u8, arg.type, "array<")) {
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(".len, ");
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(".ptr");
+                } else if (isStringType(arg.type) and arg.pointer == .none) {
+                    try writer.writeAll("String.from(");
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(")");
+                } else {
+                    try writeIdent(writer, arg.name, .snake);
+                }
+            }
+            if (func.callback != null) {
+                if (!first) try writer.writeAll(", ");
+                try writer.writeAll("callback_info");
+            }
+        }
+        try writer.writeAll(");\n");
+        try writer.writeAll("}\n\n");
     }
 }
 
@@ -689,6 +823,12 @@ fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void 
         try writer.writeAll(" = .{}");
         return;
     }
+}
+
+fn isStringType(type_str: []const u8) bool {
+    return std.mem.eql(u8, type_str, "string_with_default_empty") or
+        std.mem.eql(u8, type_str, "out_string") or
+        std.mem.eql(u8, type_str, "nullable_string");
 }
 
 fn writeArgType(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
