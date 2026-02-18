@@ -2,4 +2,3 @@
 .zig-cache
 zig-out
 webgpu-headers
-src/bindings.zig
