@@ -182,6 +182,39 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("};\n\n");
     }
 
+    // Callback function pointer types
+    for (schema.callbacks) |callback| {
+        try writeDocString(writer, callback.doc, 0);
+        try writer.writeAll("pub const ");
+        try writeIdent(writer, callback.name, .pascal);
+        try writer.writeAll("Callback = *const fn(\n");
+        for (callback.args) |arg| {
+            try writer.writeAll("    ");
+            try writeArgType(writer, arg);
+            try writer.writeAll(",\n");
+        }
+        try writer.writeAll("    ?*anyopaque,\n");
+        try writer.writeAll("    ?*anyopaque,\n");
+        try writer.writeAll(") callconv(.c) void;\n\n");
+    }
+
+    // Callback info structs
+    for (schema.callbacks) |callback| {
+        try writer.writeAll("pub const ");
+        try writeIdent(writer, callback.name, .pascal);
+        try writer.writeAll("CallbackInfo = extern struct {\n");
+        try writer.writeAll("    next_in_chain: ?*ChainedStruct = null,\n");
+        if (callback.style == .callback_mode) {
+            try writer.writeAll("    mode: CallbackMode = @enumFromInt(0),\n");
+        }
+        try writer.writeAll("    callback: ?");
+        try writeIdent(writer, callback.name, .pascal);
+        try writer.writeAll("Callback = null,\n");
+        try writer.writeAll("    userdata1: ?*anyopaque = null,\n");
+        try writer.writeAll("    userdata2: ?*anyopaque = null,\n");
+        try writer.writeAll("};\n\n");
+    }
+
     for (schema.objects) |obj| {
         std.debug.assert(!obj.is_struct);
 
@@ -189,6 +222,16 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("pub const ");
         try writeIdent(writer, obj.name, .pascal);
         try writer.writeAll(" = opaque* {\n");
+
+        // addRef
+        try writer.writeAll("    extern fn wgpu");
+        try writeIdent(writer, obj.name, .pascal);
+        try writer.writeAll("AddRef(self: @This()) callconv(.c) void;\n");
+        try writer.writeAll("    pub const addRef = wgpu");
+        try writeIdent(writer, obj.name, .pascal);
+        try writer.writeAll("AddRef;\n");
+
+        // release
         try writer.writeAll("    extern fn wgpu");
         try writeIdent(writer, obj.name, .pascal);
         try writer.writeAll("Release(self: @This()) callconv(.c) void;\n");
@@ -196,6 +239,48 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("    pub const release = wgpu");
         try writeIdent(writer, obj.name, .pascal);
         try writer.writeAll("Release;\n");
+
+        // methods
+        for (obj.methods) |method| {
+            try writer.writeAll("\n");
+            try writeDocString(writer, method.doc, 1);
+
+            // extern fn declaration
+            try writer.writeAll("    extern fn wgpu");
+            try writeIdent(writer, obj.name, .pascal);
+            try writeIdent(writer, method.name, .pascal);
+            try writer.writeAll("(self: @This()");
+            for (method.args) |arg| {
+                try writer.writeAll(", ");
+                try writeIdent(writer, arg.name, .snake);
+                try writer.writeAll(": ");
+                try writeArgType(writer, arg);
+            }
+            if (method.callback) |cb| {
+                try writer.writeAll(", callback_info: ");
+                const cb_name = cb["callback.".len..];
+                try writeIdent(writer, cb_name, .pascal);
+                try writer.writeAll("CallbackInfo");
+            }
+            try writer.writeAll(") callconv(.c) ");
+            if (method.returns) |ret| {
+                try writeReturnType(writer, ret);
+            } else if (method.callback != null) {
+                try writer.writeAll("Future");
+            } else {
+                try writer.writeAll("void");
+            }
+            try writer.writeAll(";\n");
+
+            // pub const alias
+            try writer.writeAll("    pub const ");
+            try writeIdent(writer, method.name, .camel);
+            try writer.writeAll(" = wgpu");
+            try writeIdent(writer, obj.name, .pascal);
+            try writeIdent(writer, method.name, .pascal);
+            try writer.writeAll(";\n");
+        }
+
         try writer.writeAll("};\n\n");
     }
 
@@ -256,7 +341,45 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             }
         }
 
+        // free_members method for structs that need it
+        if (str.free_members) {
+            try writer.writeAll("\n    extern fn wgpu");
+            try writeIdent(writer, str.name, .pascal);
+            try writer.writeAll("FreeMembers(self: @This()) callconv(.c) void;\n");
+            try writer.writeAll("    pub const freeMembers = wgpu");
+            try writeIdent(writer, str.name, .pascal);
+            try writer.writeAll("FreeMembers;\n");
+        }
+
         try writer.writeAll("};\n\n");
+    }
+
+    // Global functions
+    for (schema.functions) |func| {
+        try writeDocString(writer, func.doc, 0);
+        try writer.writeAll("extern fn wgpu");
+        try writeIdent(writer, func.name, .pascal);
+        try writer.writeAll("(");
+        var first = true;
+        for (func.args) |arg| {
+            if (!first) try writer.writeAll(", ");
+            first = false;
+            try writeIdent(writer, arg.name, .snake);
+            try writer.writeAll(": ");
+            try writeArgType(writer, arg);
+        }
+        try writer.writeAll(") callconv(.c) ");
+        if (func.returns) |ret| {
+            try writeReturnType(writer, ret);
+        } else {
+            try writer.writeAll("void");
+        }
+        try writer.writeAll(";\n");
+        try writer.writeAll("pub const ");
+        try writeIdent(writer, func.name, .camel);
+        try writer.writeAll(" = wgpu");
+        try writeIdent(writer, func.name, .pascal);
+        try writer.writeAll(";\n\n");
     }
 }
 
@@ -555,6 +678,52 @@ fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void 
         try writer.writeAll(" = .{}");
         return;
     }
+}
+
+fn writeArgType(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
+    const type_str = arg.type;
+
+    if (arg.pointer != .none) {
+        if (arg.optional) {
+            try writer.writeAll("?");
+        }
+        switch (arg.pointer) {
+            .immutable => try writer.writeAll("[*]const "),
+            .mutable => try writer.writeAll("[*]"),
+            .none => unreachable,
+        }
+        try writeTypeInner(writer, type_str, false);
+        return;
+    }
+
+    if (arg.optional) {
+        if (std.mem.startsWith(u8, type_str, "object.")) {
+            // optional object -> nullable pointer, handled by writeTypeInner
+        } else {
+            try writer.writeAll("?");
+        }
+    }
+
+    try writeTypeInner(writer, type_str, arg.optional);
+}
+
+fn writeReturnType(writer: *std.Io.Writer, ret: Schema.Parameter) !void {
+    const type_str = ret.type;
+
+    if (ret.pointer != .none) {
+        if (ret.optional) {
+            try writer.writeAll("?");
+        }
+        switch (ret.pointer) {
+            .immutable => try writer.writeAll("[*]const "),
+            .mutable => try writer.writeAll("[*]"),
+            .none => unreachable,
+        }
+        try writeTypeInner(writer, type_str, false);
+        return;
+    }
+
+    try writeTypeInner(writer, type_str, false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

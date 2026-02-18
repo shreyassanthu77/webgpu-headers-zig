@@ -59,6 +59,7 @@ pub const Function = struct {
     name: []const u8,
     returns: ?Parameter = null,
     args: []const Parameter = &.{},
+    callback: ?[]const u8 = null,
 };
 
 pub const Object = struct {
