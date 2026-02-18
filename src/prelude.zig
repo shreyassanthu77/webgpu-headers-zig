@@ -23,10 +23,7 @@ pub const Bool = enum(u32) {
         undefined = 2,
 
         pub fn from(value: ?bool) Optional {
-            return switch (value) {
-                null => .undefined,
-                else => @enumFromInt(@intFromBool(value.?)),
-            };
+            return if (value) |v| @enumFromInt(@intFromBool(v)) else .undefined;
         }
 
         pub fn fromBool(value: Bool) Optional {
@@ -36,7 +33,8 @@ pub const Bool = enum(u32) {
         pub fn into(self: Optional) ?bool {
             return switch (self) {
                 .undefined => null,
-                else => @bitCast(@as(?bool, @intCast(@intFromEnum(self)))),
+                .false => false,
+                .true => true,
             };
         }
 
@@ -60,7 +58,7 @@ pub const String = extern struct {
     /// Only use this when you know the ptr is not null or the length is correct.
     /// All webgpu funtions that give you string will always have a length.
     pub fn slice(self: String) []const u8 {
-        return self.ptr[0..self.len];
+        return self.ptr.?[0..self.len];
     }
 
     pub fn safeSlice(self: String) []const u8 {
@@ -68,7 +66,7 @@ pub const String = extern struct {
         const len = self.len;
         return switch (len) {
             0 => "",
-            WGPU_STRLEN => std.mem.span(ptr),
+            WGPU_STRLEN => std.mem.span(@as([*:0]const u8, @ptrCast(ptr))),
             else => ptr[0..len],
         };
     }
@@ -86,3 +84,20 @@ const nan =
         std.zig.c_translation.builtins.nanf("")
     else
         std.zig.c_builtins.nanf("");
+
+comptime {
+    refAllDeclsRecursive(@This());
+}
+
+fn refAllDeclsRecursive(comptime T: type) void {
+    if (!builtin.is_test) return;
+    inline for (comptime std.meta.declarations(T)) |decl| {
+        if (@TypeOf(@field(T, decl.name)) == type) {
+            switch (@typeInfo(@field(T, decl.name))) {
+                .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsRecursive(@field(T, decl.name)),
+                else => {},
+            }
+        }
+        _ = &@field(T, decl.name);
+    }
+}

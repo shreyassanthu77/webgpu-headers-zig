@@ -115,6 +115,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("Callback = null,\n");
         try writer.writeAll("    userdata1: ?*anyopaque = null,\n");
         try writer.writeAll("    userdata2: ?*anyopaque = null,\n");
+        try writeCallbackInfoHelpers(writer, callback);
         try writer.writeAll("};\n\n");
     }
 
@@ -332,6 +333,7 @@ const zig_keywords = std.StaticStringMap(void).initComptime(.{
     .{"switch"},
     .{"test"},
     .{"threadlocal"},
+    .{"type"},
     .{"true"},
     .{"try"},
     .{"union"},
@@ -723,6 +725,199 @@ fn isStringParamType(typ: Schema.Parameter.Type) bool {
         .string_with_default_empty, .out_string, .nullable_string => true,
         else => false,
     };
+}
+
+fn writeUserCallbackArgType(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
+    if (arg.pointer == .none and isStringParamType(arg.type)) {
+        try writer.writeAll("[]const u8");
+    } else {
+        try writeArgType(writer, arg);
+    }
+}
+
+fn writeUserCallbackArgTypes(writer: *std.Io.Writer, args: []const Schema.Parameter) !void {
+    for (args, 0..) |arg, i| {
+        if (i > 0) try writer.writeAll(", ");
+        try writeUserCallbackArgType(writer, arg);
+    }
+}
+
+fn writeUserCallbackForwardedArg(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
+    if (arg.pointer == .none and isStringParamType(arg.type)) {
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(".safeSlice()");
+    } else {
+        try writeIdent(writer, arg.name, .snake);
+    }
+}
+
+fn writeUserCallbackForwardedArgs(writer: *std.Io.Writer, args: []const Schema.Parameter) !void {
+    for (args, 0..) |arg, i| {
+        if (i > 0) try writer.writeAll(", ");
+        try writeUserCallbackForwardedArg(writer, arg);
+    }
+}
+
+fn writeCallbackTypeRef(writer: *std.Io.Writer, callback_name: []const u8) !void {
+    try writeIdent(writer, callback_name, .pascal);
+    try writer.writeAll("Callback");
+}
+
+fn writeCallbackInfoHelpers(writer: *std.Io.Writer, callback: Schema.Callback) !void {
+    if (callback.style == .callback_mode) {
+        try writer.writeAll("\n    pub inline fn withMode(self: @This(), mode: CallbackMode) @This() {\n");
+        try writer.writeAll("        var info = self;\n");
+        try writer.writeAll("        info.mode = mode;\n");
+        try writer.writeAll("        return info;\n");
+        try writer.writeAll("    }\n");
+    }
+
+    try writer.writeAll("\n    pub inline fn from(\n");
+    try writer.writeAll("        comptime handler: fn(");
+    try writeUserCallbackArgTypes(writer, callback.args);
+    try writer.writeAll(") void,\n");
+    try writer.writeAll("    ) @This() {\n");
+    try writer.writeAll("        return .{\n");
+    try writer.writeAll("            .callback = adaptNoContext(handler),\n");
+    try writer.writeAll("        };\n");
+    try writer.writeAll("    }\n\n");
+
+    try writer.writeAll("    pub inline fn fromContext(\n");
+    try writer.writeAll("        comptime Context: type,\n");
+    try writer.writeAll("        context: *Context,\n");
+    try writer.writeAll("        comptime handler: fn(*Context");
+    if (callback.args.len > 0) {
+        try writer.writeAll(", ");
+        try writeUserCallbackArgTypes(writer, callback.args);
+    }
+    try writer.writeAll(") void,\n");
+    try writer.writeAll("    ) @This() {\n");
+    try writer.writeAll("        return .{\n");
+    try writer.writeAll("            .callback = adaptContext(Context, handler),\n");
+    try writer.writeAll("            .userdata1 = context,\n");
+    try writer.writeAll("        };\n");
+    try writer.writeAll("    }\n\n");
+
+    try writer.writeAll("    pub inline fn fromContexts(\n");
+    try writer.writeAll("        comptime Context1: type,\n");
+    try writer.writeAll("        context1: *Context1,\n");
+    try writer.writeAll("        comptime Context2: type,\n");
+    try writer.writeAll("        context2: *Context2,\n");
+    try writer.writeAll("        comptime handler: fn(*Context1, *Context2");
+    if (callback.args.len > 0) {
+        try writer.writeAll(", ");
+        try writeUserCallbackArgTypes(writer, callback.args);
+    }
+    try writer.writeAll(") void,\n");
+    try writer.writeAll("    ) @This() {\n");
+    try writer.writeAll("        return .{\n");
+    try writer.writeAll("            .callback = adaptContexts(Context1, Context2, handler),\n");
+    try writer.writeAll("            .userdata1 = context1,\n");
+    try writer.writeAll("            .userdata2 = context2,\n");
+    try writer.writeAll("        };\n");
+    try writer.writeAll("    }\n\n");
+
+    try writer.writeAll("    fn adaptNoContext(\n");
+    try writer.writeAll("        comptime handler: fn(");
+    try writeUserCallbackArgTypes(writer, callback.args);
+    try writer.writeAll(") void,\n");
+    try writer.writeAll("    ) ");
+    try writeCallbackTypeRef(writer, callback.name);
+    try writer.writeAll(" {\n");
+    try writer.writeAll("        return struct {\n");
+    try writer.writeAll("            const cb = handler;\n");
+    try writer.writeAll("            fn trampoline(\n");
+    for (callback.args) |arg| {
+        try writer.writeAll("                ");
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(": ");
+        try writeArgType(writer, arg);
+        try writer.writeAll(",\n");
+    }
+    try writer.writeAll("                _: ?*anyopaque,\n");
+    try writer.writeAll("                _: ?*anyopaque,\n");
+    try writer.writeAll("            ) callconv(.c) void {\n");
+    try writer.writeAll("                @call(.always_inline, cb, .{");
+    try writeUserCallbackForwardedArgs(writer, callback.args);
+    try writer.writeAll("});\n");
+    try writer.writeAll("            }\n");
+    try writer.writeAll("        }.trampoline;\n");
+    try writer.writeAll("    }\n\n");
+
+    try writer.writeAll("    fn adaptContext(\n");
+    try writer.writeAll("        comptime Context: type,\n");
+    try writer.writeAll("        comptime handler: fn(*Context");
+    if (callback.args.len > 0) {
+        try writer.writeAll(", ");
+        try writeUserCallbackArgTypes(writer, callback.args);
+    }
+    try writer.writeAll(") void,\n");
+    try writer.writeAll("    ) ");
+    try writeCallbackTypeRef(writer, callback.name);
+    try writer.writeAll(" {\n");
+    try writer.writeAll("        return struct {\n");
+    try writer.writeAll("            const Ctx = Context;\n");
+    try writer.writeAll("            const cb = handler;\n");
+    try writer.writeAll("            fn trampoline(\n");
+    for (callback.args) |arg| {
+        try writer.writeAll("                ");
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(": ");
+        try writeArgType(writer, arg);
+        try writer.writeAll(",\n");
+    }
+    try writer.writeAll("                userdata1: ?*anyopaque,\n");
+    try writer.writeAll("                _: ?*anyopaque,\n");
+    try writer.writeAll("            ) callconv(.c) void {\n");
+    try writer.writeAll("                const ctx: *Ctx = @ptrCast(@alignCast(userdata1 orelse unreachable));\n");
+    try writer.writeAll("                @call(.always_inline, cb, .{ctx");
+    if (callback.args.len > 0) {
+        try writer.writeAll(", ");
+        try writeUserCallbackForwardedArgs(writer, callback.args);
+    }
+    try writer.writeAll("});\n");
+    try writer.writeAll("            }\n");
+    try writer.writeAll("        }.trampoline;\n");
+    try writer.writeAll("    }\n\n");
+
+    try writer.writeAll("    fn adaptContexts(\n");
+    try writer.writeAll("        comptime Context1: type,\n");
+    try writer.writeAll("        comptime Context2: type,\n");
+    try writer.writeAll("        comptime handler: fn(*Context1, *Context2");
+    if (callback.args.len > 0) {
+        try writer.writeAll(", ");
+        try writeUserCallbackArgTypes(writer, callback.args);
+    }
+    try writer.writeAll(") void,\n");
+    try writer.writeAll("    ) ");
+    try writeCallbackTypeRef(writer, callback.name);
+    try writer.writeAll(" {\n");
+    try writer.writeAll("        return struct {\n");
+    try writer.writeAll("            const Ctx1 = Context1;\n");
+    try writer.writeAll("            const Ctx2 = Context2;\n");
+    try writer.writeAll("            const cb = handler;\n");
+    try writer.writeAll("            fn trampoline(\n");
+    for (callback.args) |arg| {
+        try writer.writeAll("                ");
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(": ");
+        try writeArgType(writer, arg);
+        try writer.writeAll(",\n");
+    }
+    try writer.writeAll("                userdata1: ?*anyopaque,\n");
+    try writer.writeAll("                userdata2: ?*anyopaque,\n");
+    try writer.writeAll("            ) callconv(.c) void {\n");
+    try writer.writeAll("                const ctx1: *Ctx1 = @ptrCast(@alignCast(userdata1 orelse unreachable));\n");
+    try writer.writeAll("                const ctx2: *Ctx2 = @ptrCast(@alignCast(userdata2 orelse unreachable));\n");
+    try writer.writeAll("                @call(.always_inline, cb, .{ctx1, ctx2");
+    if (callback.args.len > 0) {
+        try writer.writeAll(", ");
+        try writeUserCallbackForwardedArgs(writer, callback.args);
+    }
+    try writer.writeAll("});\n");
+    try writer.writeAll("            }\n");
+    try writer.writeAll("        }.trampoline;\n");
+    try writer.writeAll("    }\n");
 }
 
 fn writeCallbackInfoTypeRef(writer: *std.Io.Writer, callback_ref: []const u8) !void {
