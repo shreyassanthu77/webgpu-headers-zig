@@ -96,7 +96,7 @@ pub const Parameter = struct {
     passed_with_ownership: ?bool = null,
     default: std.json.Value = .null,
 
-    const Pointer = enum {
+    pub const Pointer = enum {
         none,
         immutable,
         mutable,

@@ -156,20 +156,8 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             try writeIdent(writer, method.name, .pascal);
             try writer.writeAll("(self: @This()");
             for (method.args) |arg| {
-                if (std.mem.startsWith(u8, arg.type, "array<")) {
-                    const inner = arg.type["array<".len .. arg.type.len - 1];
-                    try writer.writeAll(", ");
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll("_count: usize, ");
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(": ?[*]const ");
-                    try writeTypeInner(writer, inner, false);
-                } else {
-                    try writer.writeAll(", ");
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(": ");
-                    try writeArgType(writer, arg);
-                }
+                try writer.writeAll(", ");
+                try writeExternParameter(writer, arg);
             }
             if (method.callback) |cb| {
                 try writer.writeAll(", callback_info: ");
@@ -193,17 +181,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             try writer.writeAll("(self: @This()");
             for (method.args) |arg| {
                 try writer.writeAll(", ");
-                try writeIdent(writer, arg.name, .snake);
-                try writer.writeAll(": ");
-                if (std.mem.startsWith(u8, arg.type, "array<")) {
-                    const inner = arg.type["array<".len .. arg.type.len - 1];
-                    try writer.writeAll("[]const ");
-                    try writeTypeInner(writer, inner, false);
-                } else if (isStringType(arg.type) and arg.pointer == .none) {
-                    try writer.writeAll("[]const u8");
-                } else {
-                    try writeArgType(writer, arg);
-                }
+                try writeWrapperParameter(writer, arg);
             }
             if (method.callback) |cb| {
                 try writer.writeAll(", callback_info: ");
@@ -226,18 +204,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             try writer.writeAll("(self");
             for (method.args) |arg| {
                 try writer.writeAll(", ");
-                if (std.mem.startsWith(u8, arg.type, "array<")) {
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(".len, ");
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(".ptr");
-                } else if (isStringType(arg.type) and arg.pointer == .none) {
-                    try writer.writeAll("String.from(");
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(")");
-                } else {
-                    try writeIdent(writer, arg.name, .snake);
-                }
+                try writeForwardedArgument(writer, arg);
             }
             if (method.callback != null) {
                 try writer.writeAll(", callback_info");
@@ -332,18 +299,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             for (func.args) |arg| {
                 if (!first) try writer.writeAll(", ");
                 first = false;
-                if (std.mem.startsWith(u8, arg.type, "array<")) {
-                    const inner = arg.type["array<".len .. arg.type.len - 1];
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll("_count: usize, ");
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(": ?[*]const ");
-                    try writeTypeInner(writer, inner, false);
-                } else {
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(": ");
-                    try writeArgType(writer, arg);
-                }
+                try writeExternParameter(writer, arg);
             }
             if (func.callback) |cb| {
                 if (!first) try writer.writeAll(", ");
@@ -372,17 +328,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             for (func.args) |arg| {
                 if (!first) try writer.writeAll(", ");
                 first = false;
-                try writeIdent(writer, arg.name, .snake);
-                try writer.writeAll(": ");
-                if (std.mem.startsWith(u8, arg.type, "array<")) {
-                    const inner = arg.type["array<".len .. arg.type.len - 1];
-                    try writer.writeAll("[]const ");
-                    try writeTypeInner(writer, inner, false);
-                } else if (isStringType(arg.type) and arg.pointer == .none) {
-                    try writer.writeAll("[]const u8");
-                } else {
-                    try writeArgType(writer, arg);
-                }
+                try writeWrapperParameter(writer, arg);
             }
             if (func.callback) |cb| {
                 if (!first) try writer.writeAll(", ");
@@ -409,18 +355,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             for (func.args) |arg| {
                 if (!first) try writer.writeAll(", ");
                 first = false;
-                if (std.mem.startsWith(u8, arg.type, "array<")) {
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(".len, ");
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(".ptr");
-                } else if (isStringType(arg.type) and arg.pointer == .none) {
-                    try writer.writeAll("String.from(");
-                    try writeIdent(writer, arg.name, .snake);
-                    try writer.writeAll(")");
-                } else {
-                    try writeIdent(writer, arg.name, .snake);
-                }
+                try writeForwardedArgument(writer, arg);
             }
             if (func.callback != null) {
                 if (!first) try writer.writeAll(", ");
@@ -446,65 +381,106 @@ fn writeDocString(writer: *std.Io.Writer, str: []const u8, indent: usize) !void 
 
 const Case = enum { camel, pascal, snake };
 
-fn isZigKeyword(str: []const u8) bool {
-    const keywords = [_][]const u8{
-        "addrspace",
-        "align",
-        "allowzero",
-        "and",
-        "anyframe",
-        "anytype",
-        "asm",
-        "async",
-        "await",
-        "break",
-        "callconv",
-        "catch",
-        "comptime",
-        "const",
-        "continue",
-        "defer",
-        "else",
-        "enum",
-        "errdefer",
-        "error",
-        "export",
-        "extern",
-        "false",
-        "fn",
-        "for",
-        "if",
-        "inline",
-        "linksection",
-        "noalias",
-        "noinline",
-        "nosuspend",
-        "opaque",
-        "or",
-        "orelse",
-        "packed",
-        "pub",
-        "resume",
-        "return",
-        "struct",
-        "suspend",
-        "switch",
-        "test",
-        "threadlocal",
-        "true",
-        "try",
-        "union",
-        "unreachable",
-        "usingnamespace",
-        "var",
-        "volatile",
-        "while",
-    };
+const zig_keywords = std.StaticStringMap(void).initComptime(.{
+    .{"addrspace"},
+    .{"align"},
+    .{"allowzero"},
+    .{"and"},
+    .{"anyframe"},
+    .{"anytype"},
+    .{"asm"},
+    .{"async"},
+    .{"await"},
+    .{"break"},
+    .{"callconv"},
+    .{"catch"},
+    .{"comptime"},
+    .{"const"},
+    .{"continue"},
+    .{"defer"},
+    .{"else"},
+    .{"enum"},
+    .{"errdefer"},
+    .{"error"},
+    .{"export"},
+    .{"extern"},
+    .{"false"},
+    .{"fn"},
+    .{"for"},
+    .{"if"},
+    .{"inline"},
+    .{"linksection"},
+    .{"noalias"},
+    .{"noinline"},
+    .{"nosuspend"},
+    .{"opaque"},
+    .{"or"},
+    .{"orelse"},
+    .{"packed"},
+    .{"pub"},
+    .{"resume"},
+    .{"return"},
+    .{"struct"},
+    .{"suspend"},
+    .{"switch"},
+    .{"test"},
+    .{"threadlocal"},
+    .{"true"},
+    .{"try"},
+    .{"union"},
+    .{"unreachable"},
+    .{"usingnamespace"},
+    .{"var"},
+    .{"volatile"},
+    .{"while"},
+});
 
-    for (keywords) |keyword| {
-        if (std.mem.eql(u8, str, keyword)) return true;
-    }
-    return false;
+const direct_type_mappings = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "uint32", "u32" },
+    .{ "uint64", "u64" },
+    .{ "int32", "i32" },
+    .{ "uint16", "u16" },
+    .{ "float32", "f32" },
+    .{ "nullable_float32", "f32" },
+    .{ "float64_supertype", "f64" },
+    .{ "usize", "usize" },
+    .{ "bool", "Bool" },
+    .{ "enum.bool", "Bool" },
+    .{ "optional_bool", "Bool.Optional" },
+    .{ "enum.optional_bool", "Bool.Optional" },
+    .{ "string_with_default_empty", "String" },
+    .{ "out_string", "String" },
+    .{ "nullable_string", "String" },
+    .{ "c_void", "anyopaque" },
+});
+
+const string_types = std.StaticStringMap(void).initComptime(.{
+    .{"string_with_default_empty"},
+    .{"out_string"},
+    .{"nullable_string"},
+});
+
+const optional_bool_types = std.StaticStringMap(void).initComptime(.{
+    .{"optional_bool"},
+    .{"enum.optional_bool"},
+});
+
+const zero_int_default_types = std.StaticStringMap(void).initComptime(.{
+    .{"uint32"},
+    .{"uint64"},
+    .{"int32"},
+    .{"uint16"},
+    .{"usize"},
+});
+
+const zero_float_default_types = std.StaticStringMap(void).initComptime(.{
+    .{"float32"},
+    .{"nullable_float32"},
+    .{"float64_supertype"},
+});
+
+fn isZigKeyword(str: []const u8) bool {
+    return zig_keywords.has(str);
 }
 
 fn isValidIdent(str: []const u8) bool {
@@ -558,69 +534,15 @@ fn writeMemberType(writer: *std.Io.Writer, member: Schema.Parameter) !void {
         unreachable;
     }
 
-    // Handle pointer wrapping
-    const is_optional = member.optional;
-    const pointer = member.pointer;
-
-    if (pointer != .none) {
-        if (is_optional) {
-            try writer.writeAll("?");
-        }
-        // `anyopaque` cannot be used with many pointers (`[*]anyopaque`), so c_void
-        // pointers are represented as single-item opaque pointers.
-        const is_raw = std.mem.eql(u8, type_str, "c_void");
-        switch (pointer) {
-            .immutable => try writer.writeAll(if (is_raw) "*const " else "*const "),
-            .mutable => try writer.writeAll(if (is_raw) "*" else "*"),
-            .none => unreachable,
-        }
-    } else if (is_optional) {
-        // Optional non-pointer object types are nullable pointers already
-        // For non-object types, optional means something different
-        if (std.mem.startsWith(u8, type_str, "object.")) {
-            // object types are already pointers, optional makes them nullable
-            // handled below
-        } else {
-            try writer.writeAll("?");
-        }
-    }
-
-    try writeTypeInner(writer, type_str, is_optional);
+    try writeParameterType(writer, member, .single, true);
 }
 
 fn writeTypeInner(writer: *std.Io.Writer, type_str: []const u8, optional: bool) !void {
-    if (std.mem.eql(u8, type_str, "uint32")) {
-        try writer.writeAll("u32");
-    } else if (std.mem.eql(u8, type_str, "uint64")) {
-        try writer.writeAll("u64");
-    } else if (std.mem.eql(u8, type_str, "int32")) {
-        try writer.writeAll("i32");
-    } else if (std.mem.eql(u8, type_str, "uint16")) {
-        try writer.writeAll("u16");
-    } else if (std.mem.eql(u8, type_str, "float32") or std.mem.eql(u8, type_str, "nullable_float32")) {
-        try writer.writeAll("f32");
-    } else if (std.mem.eql(u8, type_str, "float64_supertype")) {
-        try writer.writeAll("f64");
-    } else if (std.mem.eql(u8, type_str, "usize")) {
-        try writer.writeAll("usize");
-    } else if (std.mem.eql(u8, type_str, "bool")) {
-        try writer.writeAll("Bool");
-    } else if (std.mem.eql(u8, type_str, "optional_bool") or std.mem.eql(u8, type_str, "enum.optional_bool")) {
-        try writer.writeAll("Bool.Optional");
-    } else if (std.mem.eql(u8, type_str, "string_with_default_empty") or
-        std.mem.eql(u8, type_str, "out_string") or
-        std.mem.eql(u8, type_str, "nullable_string"))
-    {
-        try writer.writeAll("String");
-    } else if (std.mem.eql(u8, type_str, "c_void")) {
-        try writer.writeAll("anyopaque");
+    if (direct_type_mappings.get(type_str)) |mapped| {
+        try writer.writeAll(mapped);
     } else if (std.mem.startsWith(u8, type_str, "enum.")) {
         const name = type_str["enum.".len..];
-        if (std.mem.eql(u8, name, "optional_bool")) {
-            try writer.writeAll("Bool.Optional");
-        } else {
-            try writeIdent(writer, name, .pascal);
-        }
+        try writeIdent(writer, name, .pascal);
     } else if (std.mem.startsWith(u8, type_str, "struct.")) {
         const name = type_str["struct.".len..];
         try writeIdent(writer, name, .pascal);
@@ -745,10 +667,7 @@ fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void 
     }
 
     // String types default to String.NULL
-    if (std.mem.eql(u8, type_str, "string_with_default_empty") or
-        std.mem.eql(u8, type_str, "out_string") or
-        std.mem.eql(u8, type_str, "nullable_string"))
-    {
+    if (isStringType(type_str)) {
         try writer.writeAll(" = String.NULL");
         return;
     }
@@ -759,20 +678,11 @@ fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void 
     }
 
     // Numeric types default to 0
-    if (std.mem.eql(u8, type_str, "uint32") or
-        std.mem.eql(u8, type_str, "uint64") or
-        std.mem.eql(u8, type_str, "int32") or
-        std.mem.eql(u8, type_str, "uint16") or
-        std.mem.eql(u8, type_str, "usize"))
-    {
+    if (zero_int_default_types.has(type_str)) {
         try writer.writeAll(" = 0");
         return;
     }
-    if (std.mem.eql(u8, type_str, "float32") or std.mem.eql(u8, type_str, "nullable_float32")) {
-        try writer.writeAll(" = 0.0");
-        return;
-    }
-    if (std.mem.eql(u8, type_str, "float64_supertype")) {
+    if (zero_float_default_types.has(type_str)) {
         try writer.writeAll(" = 0.0");
         return;
     }
@@ -784,7 +694,7 @@ fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void 
     }
 
     // optional_bool defaults to .undefined
-    if (std.mem.eql(u8, type_str, "optional_bool") or std.mem.eql(u8, type_str, "enum.optional_bool")) {
+    if (optional_bool_types.has(type_str)) {
         try writer.writeAll(" = .undefined");
         return;
     }
@@ -809,59 +719,128 @@ fn writeImplicitDefault(writer: *std.Io.Writer, member: Schema.Parameter) !void 
 }
 
 fn isStringType(type_str: []const u8) bool {
-    return std.mem.eql(u8, type_str, "string_with_default_empty") or
-        std.mem.eql(u8, type_str, "out_string") or
-        std.mem.eql(u8, type_str, "nullable_string");
+    return string_types.has(type_str);
+}
+
+fn arrayInnerType(type_str: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, type_str, "array<")) return null;
+    return type_str["array<".len .. type_str.len - 1];
+}
+
+const PointerWidth = enum {
+    single,
+    many,
+};
+
+fn writePointerPrefix(
+    writer: *std.Io.Writer,
+    pointer: Schema.Parameter.Pointer,
+    type_str: []const u8,
+    comptime width: PointerWidth,
+) !void {
+    // `anyopaque` cannot be used with many pointers (`[*]anyopaque`), so c_void
+    // pointers are represented as single-item opaque pointers.
+    const is_raw = std.mem.eql(u8, type_str, "c_void");
+    switch (pointer) {
+        .immutable => {
+            if (is_raw or width == .single) {
+                try writer.writeAll("*const ");
+            } else {
+                try writer.writeAll("[*]const ");
+            }
+        },
+        .mutable => {
+            if (is_raw or width == .single) {
+                try writer.writeAll("*");
+            } else {
+                try writer.writeAll("[*]");
+            }
+        },
+        .none => unreachable,
+    }
+}
+
+fn writeParameterType(
+    writer: *std.Io.Writer,
+    param: Schema.Parameter,
+    comptime pointer_width: PointerWidth,
+    comptime forward_optional_to_inner: bool,
+) !void {
+    const type_str = param.type;
+
+    if (param.pointer != .none) {
+        if (param.optional) {
+            try writer.writeAll("?");
+        }
+        try writePointerPrefix(writer, param.pointer, type_str, pointer_width);
+        try writeTypeInner(writer, type_str, false);
+        return;
+    }
+
+    if (param.optional and !std.mem.startsWith(u8, type_str, "object.")) {
+        try writer.writeAll("?");
+    }
+
+    try writeTypeInner(writer, type_str, if (forward_optional_to_inner) param.optional else false);
+}
+
+fn writeExternParameter(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
+    if (arrayInnerType(arg.type)) |inner| {
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll("_count: usize, ");
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(": ?[*]const ");
+        try writeTypeInner(writer, inner, false);
+        return;
+    }
+
+    try writeIdent(writer, arg.name, .snake);
+    try writer.writeAll(": ");
+    try writeArgType(writer, arg);
+}
+
+fn writeWrapperParameter(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
+    if (arrayInnerType(arg.type)) |inner| {
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(": []const ");
+        try writeTypeInner(writer, inner, false);
+        return;
+    }
+
+    try writeIdent(writer, arg.name, .snake);
+    try writer.writeAll(": ");
+    if (isStringType(arg.type) and arg.pointer == .none) {
+        try writer.writeAll("[]const u8");
+    } else {
+        try writeArgType(writer, arg);
+    }
+}
+
+fn writeForwardedArgument(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
+    if (arrayInnerType(arg.type) != null) {
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(".len, ");
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(".ptr");
+        return;
+    }
+
+    if (isStringType(arg.type) and arg.pointer == .none) {
+        try writer.writeAll("String.from(");
+        try writeIdent(writer, arg.name, .snake);
+        try writer.writeAll(")");
+        return;
+    }
+
+    try writeIdent(writer, arg.name, .snake);
 }
 
 fn writeArgType(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
-    const type_str = arg.type;
-
-    if (arg.pointer != .none) {
-        if (arg.optional) {
-            try writer.writeAll("?");
-        }
-        // `anyopaque` cannot be used with many pointers (`[*]anyopaque`), so c_void
-        // pointers are represented as single-item opaque pointers.
-        const is_raw = std.mem.eql(u8, type_str, "c_void");
-        switch (arg.pointer) {
-            .immutable => try writer.writeAll(if (is_raw) "*const " else "*const "),
-            .mutable => try writer.writeAll(if (is_raw) "*" else "*"),
-            .none => unreachable,
-        }
-        try writeTypeInner(writer, type_str, false);
-        return;
-    }
-
-    if (arg.optional) {
-        if (std.mem.startsWith(u8, type_str, "object.")) {
-            // optional object -> nullable pointer, handled by writeTypeInner
-        } else {
-            try writer.writeAll("?");
-        }
-    }
-
-    try writeTypeInner(writer, type_str, arg.optional);
+    try writeParameterType(writer, arg, .single, true);
 }
 
 fn writeReturnType(writer: *std.Io.Writer, ret: Schema.Parameter) !void {
-    const type_str = ret.type;
-
-    if (ret.pointer != .none) {
-        if (ret.optional) {
-            try writer.writeAll("?");
-        }
-        const is_raw = std.mem.eql(u8, type_str, "c_void");
-        switch (ret.pointer) {
-            .immutable => try writer.writeAll(if (is_raw) "*const " else "[*]const "),
-            .mutable => try writer.writeAll(if (is_raw) "*" else "[*]"),
-            .none => unreachable,
-        }
-        try writeTypeInner(writer, type_str, false);
-        return;
-    }
-
-    try writeTypeInner(writer, type_str, false);
+    try writeParameterType(writer, ret, .many, false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
