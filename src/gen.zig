@@ -221,7 +221,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writeDocString(writer, obj.doc, 0);
         try writer.writeAll("pub const ");
         try writeIdent(writer, obj.name, .pascal);
-        try writer.writeAll(" = opaque* {\n");
+        try writer.writeAll(" = *opaque {\n");
 
         // addRef
         try writer.writeAll("    extern fn wgpu");
@@ -251,10 +251,20 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             try writeIdent(writer, method.name, .pascal);
             try writer.writeAll("(self: @This()");
             for (method.args) |arg| {
-                try writer.writeAll(", ");
-                try writeIdent(writer, arg.name, .snake);
-                try writer.writeAll(": ");
-                try writeArgType(writer, arg);
+                if (std.mem.startsWith(u8, arg.type, "array<")) {
+                    const inner = arg.type["array<".len .. arg.type.len - 1];
+                    try writer.writeAll(", ");
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll("_count: usize, ");
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(": ?[*]const ");
+                    try writeTypeInner(writer, inner, false);
+                } else {
+                    try writer.writeAll(", ");
+                    try writeIdent(writer, arg.name, .snake);
+                    try writer.writeAll(": ");
+                    try writeArgType(writer, arg);
+                }
             }
             if (method.callback) |cb| {
                 try writer.writeAll(", callback_info: ");
@@ -446,9 +456,12 @@ fn writeMemberType(writer: *std.Io.Writer, member: Schema.Parameter) !void {
         if (is_optional) {
             try writer.writeAll("?");
         }
+        // c_void pointers are raw data buffers → multi-pointer [*]
+        // everything else is a single-item pointer → *
+        const is_raw = std.mem.eql(u8, type_str, "c_void");
         switch (pointer) {
-            .immutable => try writer.writeAll("[*]const "),
-            .mutable => try writer.writeAll("[*]"),
+            .immutable => try writer.writeAll(if (is_raw) "[*]const " else "*const "),
+            .mutable => try writer.writeAll(if (is_raw) "[*]" else "*"),
             .none => unreachable,
         }
     } else if (is_optional) {
@@ -504,9 +517,7 @@ fn writeTypeInner(writer: *std.Io.Writer, type_str: []const u8, optional: bool) 
     } else if (std.mem.startsWith(u8, type_str, "object.")) {
         const name = type_str["object.".len..];
         if (optional) {
-            try writer.writeAll("?*");
-        } else {
-            try writer.writeAll("*");
+            try writer.writeAll("?");
         }
         try writeIdent(writer, name, .pascal);
     } else if (std.mem.startsWith(u8, type_str, "bitflag.")) {
@@ -687,9 +698,12 @@ fn writeArgType(writer: *std.Io.Writer, arg: Schema.Parameter) !void {
         if (arg.optional) {
             try writer.writeAll("?");
         }
+        // c_void pointers are raw data buffers → multi-pointer [*]
+        // everything else is a single-item pointer → *
+        const is_raw = std.mem.eql(u8, type_str, "c_void");
         switch (arg.pointer) {
-            .immutable => try writer.writeAll("[*]const "),
-            .mutable => try writer.writeAll("[*]"),
+            .immutable => try writer.writeAll(if (is_raw) "[*]const " else "*const "),
+            .mutable => try writer.writeAll(if (is_raw) "[*]" else "*"),
             .none => unreachable,
         }
         try writeTypeInner(writer, type_str, false);
