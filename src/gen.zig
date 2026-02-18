@@ -783,15 +783,21 @@ fn writeCallbackInfoHelpers(writer: *std.Io.Writer, callback: Schema.Callback) !
     try writer.writeAll("    }\n\n");
 
     try writer.writeAll("    pub inline fn fromContext(\n");
-    try writer.writeAll("        comptime Context: type,\n");
-    try writer.writeAll("        context: *Context,\n");
-    try writer.writeAll("        comptime handler: fn(*Context");
+    try writer.writeAll("        context: anytype,\n");
+    try writer.writeAll("        comptime handler: fn(@TypeOf(context)");
     if (callback.args.len > 0) {
         try writer.writeAll(", ");
         try writeUserCallbackArgTypes(writer, callback.args);
     }
     try writer.writeAll(") void,\n");
     try writer.writeAll("    ) @This() {\n");
+    try writer.writeAll("        const Context = @TypeOf(context);\n");
+    try writer.writeAll("        comptime {\n");
+    try writer.writeAll("            const info = @typeInfo(Context);\n");
+    try writer.writeAll("            if (info != .pointer or info.pointer.size != .one or info.pointer.is_const) {\n");
+    try writer.writeAll("                @compileError(\"context must be a mutable single-item pointer\");\n");
+    try writer.writeAll("            }\n");
+    try writer.writeAll("        }\n");
     try writer.writeAll("        return .{\n");
     try writer.writeAll("            .callback = adaptContext(Context, handler),\n");
     try writer.writeAll("            .userdata1 = context,\n");
@@ -799,17 +805,27 @@ fn writeCallbackInfoHelpers(writer: *std.Io.Writer, callback: Schema.Callback) !
     try writer.writeAll("    }\n\n");
 
     try writer.writeAll("    pub inline fn fromContexts(\n");
-    try writer.writeAll("        comptime Context1: type,\n");
-    try writer.writeAll("        context1: *Context1,\n");
-    try writer.writeAll("        comptime Context2: type,\n");
-    try writer.writeAll("        context2: *Context2,\n");
-    try writer.writeAll("        comptime handler: fn(*Context1, *Context2");
+    try writer.writeAll("        context1: anytype,\n");
+    try writer.writeAll("        context2: anytype,\n");
+    try writer.writeAll("        comptime handler: fn(@TypeOf(context1), @TypeOf(context2)");
     if (callback.args.len > 0) {
         try writer.writeAll(", ");
         try writeUserCallbackArgTypes(writer, callback.args);
     }
     try writer.writeAll(") void,\n");
     try writer.writeAll("    ) @This() {\n");
+    try writer.writeAll("        const Context1 = @TypeOf(context1);\n");
+    try writer.writeAll("        const Context2 = @TypeOf(context2);\n");
+    try writer.writeAll("        comptime {\n");
+    try writer.writeAll("            const info1 = @typeInfo(Context1);\n");
+    try writer.writeAll("            if (info1 != .pointer or info1.pointer.size != .one or info1.pointer.is_const) {\n");
+    try writer.writeAll("                @compileError(\"context1 must be a mutable single-item pointer\");\n");
+    try writer.writeAll("            }\n");
+    try writer.writeAll("            const info2 = @typeInfo(Context2);\n");
+    try writer.writeAll("            if (info2 != .pointer or info2.pointer.size != .one or info2.pointer.is_const) {\n");
+    try writer.writeAll("                @compileError(\"context2 must be a mutable single-item pointer\");\n");
+    try writer.writeAll("            }\n");
+    try writer.writeAll("        }\n");
     try writer.writeAll("        return .{\n");
     try writer.writeAll("            .callback = adaptContexts(Context1, Context2, handler),\n");
     try writer.writeAll("            .userdata1 = context1,\n");
@@ -846,7 +862,7 @@ fn writeCallbackInfoHelpers(writer: *std.Io.Writer, callback: Schema.Callback) !
 
     try writer.writeAll("    fn adaptContext(\n");
     try writer.writeAll("        comptime Context: type,\n");
-    try writer.writeAll("        comptime handler: fn(*Context");
+    try writer.writeAll("        comptime handler: fn(Context");
     if (callback.args.len > 0) {
         try writer.writeAll(", ");
         try writeUserCallbackArgTypes(writer, callback.args);
@@ -869,7 +885,7 @@ fn writeCallbackInfoHelpers(writer: *std.Io.Writer, callback: Schema.Callback) !
     try writer.writeAll("                userdata1: ?*anyopaque,\n");
     try writer.writeAll("                _: ?*anyopaque,\n");
     try writer.writeAll("            ) callconv(.c) void {\n");
-    try writer.writeAll("                const ctx: *Ctx = @ptrCast(@alignCast(userdata1 orelse unreachable));\n");
+    try writer.writeAll("                const ctx: Ctx = @ptrCast(@alignCast(userdata1 orelse unreachable));\n");
     try writer.writeAll("                @call(.always_inline, cb, .{ctx");
     if (callback.args.len > 0) {
         try writer.writeAll(", ");
@@ -883,7 +899,7 @@ fn writeCallbackInfoHelpers(writer: *std.Io.Writer, callback: Schema.Callback) !
     try writer.writeAll("    fn adaptContexts(\n");
     try writer.writeAll("        comptime Context1: type,\n");
     try writer.writeAll("        comptime Context2: type,\n");
-    try writer.writeAll("        comptime handler: fn(*Context1, *Context2");
+    try writer.writeAll("        comptime handler: fn(Context1, Context2");
     if (callback.args.len > 0) {
         try writer.writeAll(", ");
         try writeUserCallbackArgTypes(writer, callback.args);
@@ -907,8 +923,8 @@ fn writeCallbackInfoHelpers(writer: *std.Io.Writer, callback: Schema.Callback) !
     try writer.writeAll("                userdata1: ?*anyopaque,\n");
     try writer.writeAll("                userdata2: ?*anyopaque,\n");
     try writer.writeAll("            ) callconv(.c) void {\n");
-    try writer.writeAll("                const ctx1: *Ctx1 = @ptrCast(@alignCast(userdata1 orelse unreachable));\n");
-    try writer.writeAll("                const ctx2: *Ctx2 = @ptrCast(@alignCast(userdata2 orelse unreachable));\n");
+    try writer.writeAll("                const ctx1: Ctx1 = @ptrCast(@alignCast(userdata1 orelse unreachable));\n");
+    try writer.writeAll("                const ctx2: Ctx2 = @ptrCast(@alignCast(userdata2 orelse unreachable));\n");
     try writer.writeAll("                @call(.always_inline, cb, .{ctx1, ctx2");
     if (callback.args.len > 0) {
         try writer.writeAll(", ");
