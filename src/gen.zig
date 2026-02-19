@@ -130,7 +130,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         // addRef
         try writer.writeAll("    extern fn wgpu");
         try writeIdent(writer, obj.name, .pascal);
-        try writer.writeAll("AddRef(self: @This()) callconv(.c) void;\n");
+        try writer.writeAll("AddRef(self: *@This()) callconv(.c) void;\n");
         try writer.writeAll("    pub const addRef = wgpu");
         try writeIdent(writer, obj.name, .pascal);
         try writer.writeAll("AddRef;\n");
@@ -138,7 +138,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         // release
         try writer.writeAll("    extern fn wgpu");
         try writeIdent(writer, obj.name, .pascal);
-        try writer.writeAll("Release(self: @This()) callconv(.c) void;\n");
+        try writer.writeAll("Release(self: *@This()) callconv(.c) void;\n");
         try writer.writeAll("    /// Releases the object and its underlying resources.\n");
         try writer.writeAll("    pub const release = wgpu");
         try writeIdent(writer, obj.name, .pascal);
@@ -153,7 +153,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             try writer.writeAll("    extern fn wgpu");
             try writeIdent(writer, obj.name, .pascal);
             try writeIdent(writer, method.name, .pascal);
-            try writer.writeAll("(self: @This()");
+            try writer.writeAll("(self: *@This()");
             try writeParameterList(writer, method.args, method.callback, .extern_decl, true);
             try writer.writeAll(") callconv(.c) ");
             try writeCallableReturn(writer, method.returns, method.callback != null);
@@ -162,7 +162,7 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             // wrapper pub fn
             try writer.writeAll("    pub inline fn ");
             try writeIdent(writer, method.name, .camel);
-            try writer.writeAll("(self: @This()");
+            try writer.writeAll("(self: *@This()");
             try writeParameterList(writer, method.args, method.callback, .wrapper_decl, true);
             try writer.writeAll(") ");
             try writeCallableReturn(writer, method.returns, method.callback != null);
