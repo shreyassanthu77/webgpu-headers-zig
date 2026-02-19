@@ -165,14 +165,24 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
             try writer.writeAll("(self: *@This()");
             try writeParameterList(writer, method.args, method.callback, .wrapper_decl, true);
             try writer.writeAll(") ");
-            try writeCallableReturn(writer, method.returns, method.callback != null);
+            try writeWrapperCallableReturn(writer, method.returns, method.callback != null);
             try writer.writeAll(" {\n");
-            try writer.writeAll("        return wgpu");
-            try writeIdent(writer, obj.name, .pascal);
-            try writeIdent(writer, method.name, .pascal);
-            try writer.writeAll("(self");
-            try writeParameterList(writer, method.args, method.callback, .call, true);
-            try writer.writeAll(");\n");
+            const needs_bool_into = callableReturnNeedsBoolInto(method.returns, method.callback != null);
+            if (needs_bool_into) {
+                try writer.writeAll("        return wgpu");
+                try writeIdent(writer, obj.name, .pascal);
+                try writeIdent(writer, method.name, .pascal);
+                try writer.writeAll("(self");
+                try writeParameterList(writer, method.args, method.callback, .call, true);
+                try writer.writeAll(").into();\n");
+            } else {
+                try writer.writeAll("        return wgpu");
+                try writeIdent(writer, obj.name, .pascal);
+                try writeIdent(writer, method.name, .pascal);
+                try writer.writeAll("(self");
+                try writeParameterList(writer, method.args, method.callback, .call, true);
+                try writer.writeAll(");\n");
+            }
             try writer.writeAll("    }\n");
         }
 
@@ -264,13 +274,22 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("(");
         try writeParameterList(writer, func.args, func.callback, .wrapper_decl, false);
         try writer.writeAll(") ");
-        try writeCallableReturn(writer, func.returns, func.callback != null);
+        try writeWrapperCallableReturn(writer, func.returns, func.callback != null);
         try writer.writeAll(" {\n");
-        try writer.writeAll("    return wgpu");
-        try writeIdent(writer, func.name, .pascal);
-        try writer.writeAll("(");
-        try writeParameterList(writer, func.args, func.callback, .call, false);
-        try writer.writeAll(");\n");
+        const needs_bool_into = callableReturnNeedsBoolInto(func.returns, func.callback != null);
+        if (needs_bool_into) {
+            try writer.writeAll("    return wgpu");
+            try writeIdent(writer, func.name, .pascal);
+            try writer.writeAll("(");
+            try writeParameterList(writer, func.args, func.callback, .call, false);
+            try writer.writeAll(").into();\n");
+        } else {
+            try writer.writeAll("    return wgpu");
+            try writeIdent(writer, func.name, .pascal);
+            try writer.writeAll("(");
+            try writeParameterList(writer, func.args, func.callback, .call, false);
+            try writer.writeAll(");\n");
+        }
         try writer.writeAll("}\n\n");
     }
 }
@@ -950,6 +969,24 @@ fn writeCallableReturn(writer: *std.Io.Writer, ret: ?Schema.Parameter, has_callb
     } else {
         try writer.writeAll("void");
     }
+}
+
+fn writeWrapperCallableReturn(writer: *std.Io.Writer, ret: ?Schema.Parameter, has_callback: bool) !void {
+    if (callableReturnNeedsBoolInto(ret, has_callback)) {
+        try writer.writeAll("bool");
+        return;
+    }
+    try writeCallableReturn(writer, ret, has_callback);
+}
+
+fn callableReturnNeedsBoolInto(ret: ?Schema.Parameter, has_callback: bool) bool {
+    if (has_callback) return false;
+    const r = ret orelse return false;
+    if (r.pointer != .none) return false;
+    return switch (r.type) {
+        .bool => true,
+        else => false,
+    };
 }
 
 fn writeParameterList(
