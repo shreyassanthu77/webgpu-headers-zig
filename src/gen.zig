@@ -73,12 +73,12 @@ fn generateBindings(gpa: std.mem.Allocator, input_contents: []const u8, writer: 
         try writer.writeAll("pub const ");
         try writeIdent(writer, en.name, .pascal);
         try writer.writeAll(" = enum(u32) {\n");
-        for (en.entries) |entry| {
+        for (en.entries, 0..) |entry, i| {
             const e = entry orelse continue;
             try writeDocString(writer, e.doc, 1);
             try writer.writeAll("    ");
             try writeIdent(writer, e.name, .snake);
-            try writer.writeAll(",\n");
+            try writer.print(" = 0x{X:0>8},\n", .{i});
         }
         try writer.writeAll("    _,\n");
 
